@@ -1,0 +1,1286 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Victron монітор</title>
+<!--
+  Local monitor for a Victron MultiPlus-II GX (and any GX device on Venus OS).
+  No external dependencies: works without internet, needs only LAN access to the GX.
+
+  On the GX enable: Settings → Services (newer firmware: Settings → Integrations) → MQTT
+  (LAN access, plaintext). The page connects over MQTT-over-WebSocket: ws://<GX IP>:9001
+  (newer Venus OS also serves ws://<GX IP>/websocket-mqtt).
+
+  It can be hosted on the GX itself (see deploy-to-gx.ps1): then it opens as http://<GX IP>/monitor/
+  from any phone/tablet and connects to that GX by itself.
+
+  Quick start: victron-monitor.html?host=192.168.1.50   or   victron-monitor.html?demo=1
+  Wall mode (tablet): add &wall=1, e.g. victron-monitor.html?host=192.168.1.50&wall=1
+-->
+<style>
+:root{
+  --bg:#0e1317;--card:#161e25;--line:#25313c;--fg:#e6edf3;--mut:#8b98a5;
+  --ok:#3fb950;--warn:#d29922;--bad:#f85149;--chg:#3fb950;--dis:#f0883e;--acc:#58a6ff;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--fg)}
+body{font:15px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;min-height:100vh}
+header{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.brand{font-weight:600;font-size:17px}
+.conn{display:flex;align-items:center;gap:8px;color:var(--mut);font-size:13px}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--mut);flex:none}
+.conn.ok .dot{background:var(--ok)} .conn.wait .dot{background:var(--warn)} .conn.bad .dot{background:var(--bad)}
+.sp{flex:1}
+button{background:#21303d;color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:7px 12px;font:inherit;cursor:pointer}
+button:hover{border-color:var(--acc)}
+button.pri{background:var(--acc);color:#04111f;border-color:var(--acc);font-weight:600}
+.langsel{background:#21303d;color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:6px 8px;font:inherit;cursor:pointer}
+main{max-width:1200px;margin:0 auto;padding:16px;display:grid;gap:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;min-width:0}
+.lbl{color:var(--mut);font-size:13px;text-transform:uppercase;letter-spacing:.04em}
+.big{font-size:44px;font-weight:650;font-variant-numeric:tabular-nums;line-height:1.15;margin:6px 0 4px;white-space:nowrap}
+.mid{font-size:28px;font-weight:600;font-variant-numeric:tabular-nums;margin:4px 0 2px;white-space:nowrap}
+.sub{color:var(--mut);font-size:13px;min-height:1.4em}
+.hero{display:grid;grid-template-columns:1fr 1.4fr;gap:16px}
+.etaf .big,#soc{white-space:normal}
+.etaf .big>span,#soc>span{white-space:nowrap;display:inline-block}
+.rate{font-size:.45em;font-weight:500;opacity:.85;margin-left:.35em}
+.etaf.chg .big{color:var(--chg)} .etaf.dis .big{color:var(--dis)}
+.etaf.dis{border-top:1px solid var(--line);margin-top:10px;padding-top:10px}
+.etaf.fc{opacity:.6}                                 /* the "what if" forecast is dimmed */
+.etacard.chg{border-color:var(--chg)} .etacard.dis{border-color:var(--dis)}
+.bar{position:relative;height:12px;border-radius:6px;background:#0b1014;border:1px solid var(--line);overflow:hidden;margin:8px 0 6px}
+#socBar{height:100%;width:0;background:var(--ok);transition:width .6s,background .6s}
+#invBar,#gridBar{height:100%;width:0;background:var(--ok);transition:width .6s,background .6s}
+#gridLoad:empty{display:none}
+.tile.hot{border-color:var(--bad)}
+#resMark{position:absolute;top:-2px;bottom:-2px;width:2px;background:var(--bad);left:0;display:none}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:16px}
+.tile.bad{border-color:var(--bad)} .tile.bad .mid{color:var(--bad)}
+.tile.good .mid{color:var(--ok)}
+canvas{width:100%;height:180px;display:block;margin-top:8px}
+.legend{display:flex;gap:16px;color:var(--mut);font-size:12px;margin-top:6px;flex-wrap:wrap}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
+.note{color:var(--mut);font-size:12px;margin:0}
+dialog{background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:14px;padding:20px;width:min(520px,calc(100vw - 32px))}
+dialog::backdrop{background:#0009}
+dialog h2{margin:0 0 12px;font-size:18px}
+.f{display:grid;gap:4px;margin-bottom:12px}
+.f label{font-size:13px;color:var(--mut)}
+.f input{background:#0b1014;color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit;width:100%}
+.f small{color:var(--mut);font-size:12px}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.btns{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}
+.ctlrow{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.ctlrow input{width:90px;flex:0 0 auto}
+.ctlrow .pri{margin-left:auto}
+.warnt{color:var(--warn)} .warnt:empty{display:none}
+.ctlst{min-height:1.4em;font-size:14px;margin:4px 0}
+.ctlst.ok{color:var(--ok)} .ctlst.bad{color:var(--bad)}
+.etarow{display:flex;gap:14px;align-items:center}
+.etamain{flex:1;min-width:0}
+.qcols{display:flex;gap:8px;flex:0 0 auto}
+.qbtns{display:flex;flex-direction:column;gap:6px;align-items:stretch;flex:0 0 auto}
+.qbtns .qlbl{color:var(--mut);font-size:12px;text-align:center;text-transform:uppercase;letter-spacing:.04em}
+.qbtns button{min-width:72px;font-size:16px;font-weight:600;padding:8px 10px}
+.qbtns button.on{background:var(--chg);color:#04111f;border-color:var(--chg)}
+.qbtns button:disabled{opacity:.6;cursor:wait}
+#qStatus.ok{color:var(--ok)} #qStatus.bad{color:var(--bad)}
+body.wall .qbtns .qlbl{font-size:clamp(13px,1.6vw,24px)}
+body.wall .qbtns{gap:1.2vh}
+body.wall .qbtns button{font-size:clamp(16px,2.2vw,34px);padding:1.4vh 1.4vw;min-width:7vw}
+@media (max-width:820px){.hero{grid-template-columns:1fr}.big{font-size:38px}}
+/* phone: buttons below the text, in two rows "INPUT 10 13 16" / "CHARGE 20 28 35" (ascending left to right) */
+@media (max-width:560px){
+  body:not(.wall) .etarow{flex-direction:column;align-items:stretch}
+  body:not(.wall) .qcols{flex-direction:column;gap:6px}
+  body:not(.wall) .qbtns{flex-direction:row-reverse;align-items:center}
+  body:not(.wall) .qbtns .qlbl{order:99;width:56px;text-align:left}
+  body:not(.wall) .qbtns button{flex:1;min-width:0}
+  body:not(.wall) .etaf .big>.rate{display:block;margin-left:0}
+}
+[hidden]{display:none!important}
+dialog{max-height:calc(100vh - 32px);overflow:auto}
+dialog h3{font-size:15px;margin:18px 0 10px;padding-top:14px;border-top:1px solid var(--line)}
+.chk{display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:14px;cursor:pointer}
+.chk input{width:18px;height:18px;accent-color:var(--acc)}
+.row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+.clock{display:none;font-weight:600;font-variant-numeric:tabular-nums}
+.wallonly{display:none}
+.wl{font-size:18px}
+#flash{position:fixed;inset:0;pointer-events:none;opacity:0;z-index:50}
+#flash.on{animation:fl 2.6s ease-out}
+@keyframes fl{0%{opacity:.6}16%{opacity:0}33%{opacity:.6}50%{opacity:0}66%{opacity:.6}100%{opacity:0}}
+#toast{position:fixed;left:50%;top:16px;transform:translateX(-50%);background:var(--card);border:2px solid var(--acc);border-radius:12px;
+  padding:12px 20px;font-size:18px;font-weight:600;z-index:60;max-width:calc(100vw - 32px);box-shadow:0 8px 30px #000a;cursor:pointer}
+
+/* ---------- Wall mode ---------- */
+body.wall{display:flex;flex-direction:column;height:100vh;overflow:hidden}
+body.wall header{border-bottom:0;padding:1.5vh 2vw}
+body.wall .brand,body.wall .normalonly{display:none}
+body.wall .wallonly{display:inline-block}
+body.wall .clock{display:block;font-size:clamp(22px,4vw,60px)}
+body.wall .conn{font-size:clamp(13px,1.5vw,20px)}
+body.wall main{flex:1;min-height:0;width:100%;max-width:none;padding:0 2vw 2vh;grid-template-rows:minmax(0,1fr) auto}
+body.wall .hero{grid-template-columns:1fr 1.35fr;min-height:0}
+body.wall .hero .card{display:flex;flex-direction:column;justify-content:center;padding:2vh 2.5vw;min-height:0}
+body.wall .lbl{font-size:clamp(13px,1.8vw,26px)}
+body.wall .sub{font-size:clamp(13px,1.6vw,24px)}
+body.wall #soc{font-size:clamp(48px,min(12vw,22vh),220px)}
+body.wall #tDis,body.wall #tChg{font-size:clamp(28px,min(4.4vw,7vh),100px);margin:.05em 0}
+body.wall .etaf .lbl{font-size:clamp(12px,1.5vw,22px)}
+/* on the wall the bracket (power · %/h) always goes on its own line and captions stay on one line: the card height is predictable in any language */
+body.wall .etaf .big>.rate{display:block;margin:0;font-size:.42em}
+body.wall .etaf .sub{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+body.wall .etaf.dis{margin-top:1.2vh;padding-top:1.2vh}
+body.wall #soc>.rate{display:block;margin:0 0 .1em;font-size:.3em}
+body.wall .bar{height:clamp(12px,2.5vh,30px);border-radius:15px}
+body.wall .tiles{grid-template-columns:2fr 1fr}
+body.wall .tiles>:not(.wallkeep),body.wall .chartcard,body.wall .note{display:none}
+body.wall .mid{font-size:clamp(26px,4.6vw,80px)}
+body.wall #toast{font-size:clamp(18px,3vw,44px);top:3vh;padding:2vh 3vw}
+@media (orientation:portrait){
+  body.wall .hero{grid-template-columns:1fr;grid-auto-rows:1fr}
+  body.wall #soc{font-size:clamp(48px,min(18vw,13vh),220px)}
+  body.wall #tDis,body.wall #tChg{font-size:clamp(32px,min(9vw,6.5vh),120px)}
+}
+body.night header,body.night main{filter:brightness(var(--dim,.3))}
+</style>
+</head>
+<body>
+<!-- UI texts live in the TR table (script below), in two languages. Only the keys are here:
+     data-i — element text, data-it — tooltip (title), data-ip — placeholder. -->
+<header>
+  <div class="brand" data-i="brand"></div>
+  <div class="clock" id="clock"></div>
+  <div id="conn" class="conn"><span class="dot"></span><span id="connText">—</span></div>
+  <div class="sp"></div>
+  <span id="wl" class="wl" data-it="wlTitle" hidden>🔆</span>
+  <button id="sndBadge" data-i="sndOn" data-it="sndTitle" hidden></button>
+  <button id="btnDemo" class="normalonly"></button>
+  <button id="btnWall"></button>
+  <button id="btnFs" class="wallonly" data-it="fsTitle">⛶</button>
+  <button id="btnCtl" data-it="ctlTitle"></button>
+  <button id="btnCfg" data-i="settingsBtn"></button>
+  <select id="selLang" class="langsel" title="Мова · Language">
+    <option value="uk">UA</option><option value="en">EN</option>
+  </select>
+</header>
+
+<main>
+  <section class="hero">
+    <div class="card">
+      <div class="lbl" data-i="socLbl"></div>
+      <div class="big" id="soc">—</div>
+      <div class="bar"><div id="socBar"></div><div id="resMark" data-it="reserveWord"></div></div>
+      <div class="sub" id="socSub"></div>
+    </div>
+    <!-- one card: charge on top (green), discharge below (orange); whatever is happening now is bright,
+         the other one is a forecast "if the grid comes back / goes down". On the right, quick buttons for the input and charge current. -->
+    <div class="card etacard" id="cardEta">
+      <div class="etarow">
+        <div class="etamain">
+          <div class="etaf chg" id="fChg">
+            <div class="lbl" data-i="toFull"></div>
+            <div class="big" id="tChg">—</div>
+            <div class="sub" id="tChgSub"></div>
+          </div>
+          <div class="etaf dis" id="fDis">
+            <div class="lbl"><span data-i="toEmpty"></span> <span id="disTo"></span></div>
+            <div class="big" id="tDis">—</div>
+            <div class="sub" id="tDisSub"></div>
+          </div>
+          <div class="sub" id="qStatus"></div>
+        </div>
+        <div class="qcols">
+          <div class="qbtns" data-it="qInTitle">
+            <span class="qlbl" data-i="qIn"></span>
+            <button type="button" data-q="16"></button><button type="button" data-q="13"></button><button type="button" data-q="10"></button>
+          </div>
+          <div class="qbtns" data-it="qChgTitle">
+            <span class="qlbl" data-i="qChg"></span>
+            <button type="button" data-qc="35"></button><button type="button" data-qc="28"></button><button type="button" data-qc="20"></button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="tiles">
+    <div class="card tile wallkeep" id="tGrid"><div class="lbl" data-i="gridLbl"></div><div class="mid" id="grid">—</div><div class="bar" id="gridBarBox" hidden><div id="gridBar"></div></div><div class="sub" id="gridLoad"></div><div class="sub" id="gridSub"></div></div>
+    <div class="card tile wallkeep"><div class="lbl" data-i="loadLbl"></div><div class="mid" id="load">—</div><div class="bar" id="invBarBox" hidden><div id="invBar"></div></div><div class="sub" id="loadSub"></div></div>
+    <div class="card tile"><div class="lbl" data-i="batLbl"></div><div class="mid" id="bat">—</div><div class="sub" id="batSub"></div></div>
+    <div class="card tile"><div class="lbl" data-i="modeLbl"></div><div class="mid" id="state" style="font-size:20px;white-space:normal;overflow-wrap:anywhere">—</div><div class="sub" id="stateSub"></div></div>
+  </section>
+
+  <section class="card chartcard">
+    <div class="lbl" data-i="chartLbl"></div>
+    <canvas id="chart"></canvas>
+    <div class="legend">
+      <span><i style="background:var(--chg)"></i><span data-i="lgChg"></span></span>
+      <span><i style="background:var(--dis)"></i><span data-i="lgDis"></span></span>
+      <span><i style="background:var(--acc)"></i><span data-i="lgLoad"></span></span>
+    </div>
+  </section>
+
+  <p class="note" data-i="note"></p>
+</main>
+
+<dialog id="dlg">
+  <form method="dialog" id="frm">
+    <h2 data-i="settingsTitle"></h2>
+    <div class="f">
+      <label for="fUrl" data-i="fUrl"></label>
+      <input id="fUrl" placeholder="ws://192.168.1.50:9001">
+      <small data-i="fUrlHint"></small>
+    </div>
+    <div class="f">
+      <label for="fPortal" data-i="fPortal"></label>
+      <input id="fPortal" data-ip="fPortalPh">
+    </div>
+    <div class="row2">
+      <div class="f"><label for="fUser" data-i="fUser"></label><input id="fUser" autocomplete="off"></div>
+      <div class="f"><label for="fPw" data-i="fPw"></label><input id="fPw" type="password" autocomplete="off"><small data-i="fPwHint"></small></div>
+    </div>
+    <div class="row2">
+      <div class="f"><label for="fCap" data-i="fCap"></label><input id="fCap" type="number" min="0" step="1" data-ip="fCapPh"><small data-i="fCapHint"></small></div>
+      <div class="f"><label for="fRes" data-i="fRes"></label><input id="fRes" type="number" min="0" max="100" step="1" data-ip="fResPh"><small data-i="fResHint"></small></div>
+    </div>
+    <div class="row2">
+      <div class="f"><label for="fChgW" data-i="fChgW"></label><input id="fChgW" type="number" min="0" step="50" data-ip="fChgWPh"><small data-i="fChgWHint"></small></div>
+      <div class="f"><label for="fTau" data-i="fTau"></label><input id="fTau" type="number" min="1" step="1"><small data-i="fTauHint"></small></div>
+    </div>
+    <div class="f"><label for="fGridW" data-i="fGridW"></label><input id="fGridW" type="number" min="100" step="50" placeholder="3500"><small data-i="fGridWHint"></small></div>
+
+    <h3 data-i="quickTitle"></h3>
+    <div class="row2">
+      <div class="f"><label for="fQInMin" data-i="fQInMin"></label><input id="fQInMin" type="number" min="1" max="50" step="0.5" placeholder="10"></div>
+      <div class="f"><label for="fQInMax" data-i="fQInMax"></label><input id="fQInMax" type="number" min="1" max="50" step="0.5" placeholder="16"></div>
+    </div>
+    <div class="row2">
+      <div class="f"><label for="fQChgMin" data-i="fQChgMin"></label><input id="fQChgMin" type="number" min="0" max="500" step="1" placeholder="20"></div>
+      <div class="f"><label for="fQChgMax" data-i="fQChgMax"></label><input id="fQChgMax" type="number" min="0" max="500" step="1" placeholder="35"></div>
+    </div>
+    <div class="f"><small data-i="quickHint"></small></div>
+
+    <h3 data-i="wallTitle"></h3>
+    <label class="chk"><input type="checkbox" id="fWall"> <span data-i="fWall"></span></label>
+    <label class="chk"><input type="checkbox" id="fSnd"> <span data-i="fSnd"></span></label>
+    <label class="chk"><input type="checkbox" id="fQuiet"> <span data-i="fQuiet"></span></label>
+    <div class="f"><label for="fLow" data-i="fLow"></label><input id="fLow" type="number" min="0" max="100" step="1" data-ip="fLowPh"></div>
+    <div class="row3">
+      <div class="f"><label for="fNf" data-i="fNf"></label><input id="fNf" type="number" min="0" max="23" step="1"></div>
+      <div class="f"><label for="fNt" data-i="fNt"></label><input id="fNt" type="number" min="0" max="23" step="1"></div>
+      <div class="f"><label for="fNd" data-i="fNd"></label><input id="fNd" type="number" min="5" max="100" step="5"></div>
+    </div>
+    <div class="f"><small data-i="nightHint"></small></div>
+    <button type="button" id="btnTest" data-i="testSnd"></button>
+    <div class="btns"><button value="cancel" formnovalidate data-i="cancel"></button><button value="ok" class="pri" data-i="saveConnect"></button></div>
+  </form>
+</dialog>
+<dialog id="ctl">
+  <form method="dialog">
+    <h2 data-i="ctlH"></h2>
+    <div class="f">
+      <label for="cIn"><span data-i="cInLbl"></span> · <b id="cInNow">—</b></label>
+      <div class="ctlrow">
+        <input id="cIn" type="number" min="1" max="50" step="0.5">
+        <button type="button" data-in="6">6</button><button type="button" data-in="10">10</button>
+        <button type="button" data-in="13">13</button><button type="button" data-in="16">16</button>
+        <button type="button" id="cInApply" class="pri" data-i="apply"></button>
+      </div>
+      <small data-i="cInHint"></small>
+      <small id="cInWarn" class="warnt"></small>
+    </div>
+    <div class="f">
+      <label for="cChg"><span data-i="cChgLbl"></span> · <b id="cChgNow">—</b></label>
+      <div class="ctlrow">
+        <input id="cChg" type="number" min="0" max="500" step="1">
+        <button type="button" data-chg="10">10</button><button type="button" data-chg="20">20</button>
+        <button type="button" data-chg="35">35</button><button type="button" data-chg="-1" data-i="noLimit" data-it="noLimitTitle"></button>
+        <button type="button" id="cChgApply" class="pri" data-i="apply"></button>
+      </div>
+      <small data-i="cChgHint"></small>
+      <small id="cChgWarn" class="warnt"></small>
+    </div>
+    <div class="ctlst" id="cStatus"></div>
+    <div class="btns"><button value="close" data-i="close"></button></div>
+  </form>
+</dialog>
+<div id="flash"></div>
+<div id="toast" role="status" data-it="toastTitle" hidden></div>
+
+<script>
+'use strict';
+
+/* ---------- Minimal MQTT 3.1.1 client over WebSocket (QoS 0) ---------- */
+class MiniMqtt {
+  constructor(url, opts) { this.url = url; this.opts = opts || {}; this.buf = new Uint8Array(0); this.pid = 1; }
+  connect() {
+    const ws = this.ws = new WebSocket(this.url, ['mqtt']);
+    ws.binaryType = 'arraybuffer';
+    ws.onopen = () => this._sendConnect();
+    ws.onmessage = e => this._onData(new Uint8Array(e.data));
+    ws.onclose = () => { clearInterval(this.ping); if (!this.closing) this.onstate && this.onstate('closed'); };
+    ws.onerror = () => {};
+  }
+  close() { this.closing = true; clearInterval(this.ping); try { this.ws.close(); } catch (e) {} }
+  _str(s) { const b = new TextEncoder().encode(s); const o = new Uint8Array(b.length + 2); o[0] = b.length >> 8; o[1] = b.length & 255; o.set(b, 2); return o; }
+  _pkt(type, parts) {
+    const len = parts.reduce((a, p) => a + p.length, 0);
+    const hdr = [type]; let x = len;
+    do { let d = x % 128; x = Math.floor(x / 128); if (x > 0) d |= 128; hdr.push(d); } while (x > 0);
+    const out = new Uint8Array(hdr.length + len); out.set(hdr, 0);
+    let o = hdr.length; for (const p of parts) { out.set(p, o); o += p.length; }
+    if (this.ws && this.ws.readyState === 1) this.ws.send(out);
+  }
+  _sendConnect() {
+    const o = this.opts; let flags = 0x02; const payload = [this._str(o.clientId)];
+    if (o.username || o.password) { flags |= 0x80; payload.push(this._str(o.username || '')); }
+    if (o.password) { flags |= 0x40; payload.push(this._str(o.password)); }
+    this._pkt(0x10, [new Uint8Array([0, 4, 77, 81, 84, 84, 4, flags, 0, 60]), ...payload]);
+  }
+  subscribe(topics) {
+    const id = (this.pid++ & 0xffff) || 1;
+    const parts = [new Uint8Array([id >> 8, id & 255])];
+    for (const t of topics) parts.push(this._str(t), new Uint8Array([0]));
+    this._pkt(0x82, parts);
+  }
+  publish(topic, msg) { this._pkt(0x30, [this._str(topic), new TextEncoder().encode(msg || '')]); }
+  _onData(chunk) {
+    const b = new Uint8Array(this.buf.length + chunk.length); b.set(this.buf); b.set(chunk, this.buf.length);
+    let pos = 0;
+    for (;;) {
+      if (b.length - pos < 2) break;
+      let mul = 1, len = 0, i = pos + 1, d, ok = true;
+      do { if (i >= b.length) { ok = false; break; } d = b[i++]; len += (d & 127) * mul; mul *= 128; } while (d & 128);
+      if (!ok || i + len > b.length) break;
+      this._handle(b[pos], b.subarray(i, i + len)); pos = i + len;
+    }
+    this.buf = b.slice(pos);
+  }
+  _handle(h, body) {
+    const type = h >> 4;
+    if (type === 2) {
+      if (body[1] === 0) {
+        this.ping = setInterval(() => { try { this.ws.send(new Uint8Array([0xC0, 0])); } catch (e) {} }, 30000);
+        this.onstate && this.onstate('connected');
+      } else this.onstate && this.onstate('refused', body[1]);
+    } else if (type === 3) {
+      const qos = (h >> 1) & 3, tl = (body[0] << 8) | body[1];
+      const topic = new TextDecoder().decode(body.subarray(2, 2 + tl));
+      let p = 2 + tl;
+      if (qos > 0) { const a = body[p], c = body[p + 1]; p += 2; if (qos === 1) this.ws.send(new Uint8Array([0x40, 2, a, c])); }
+      this.onmessage && this.onmessage(topic, new TextDecoder().decode(body.subarray(p)));
+    }
+  }
+}
+
+/* ---------- UI languages: Ukrainian, English ---------- */
+// Each entry is [uk, en]. {x} is substituted from t(key, {x: …}).
+const LANGS = ['uk', 'en'];
+const TR = {
+  // header
+  title:        ['Victron монітор', 'Victron monitor'],
+  brand:        ['⚡ MultiPlus-II монітор', '⚡ MultiPlus-II monitor'],
+  wlTitle:      ['Екран не гасне', 'Screen stays on'],
+  sndOn:        ['🔇 Увімкнути звук', '🔇 Enable sound'],
+  sndTitle:     ['Браузер чекає дотику, щоб дозволити звук', 'The browser needs a tap to allow sound'],
+  demo:         ['Демо', 'Demo'],
+  demoExit:     ['Вийти з демо', 'Exit demo'],
+  wallOn:       ['🖥 Настінний режим', '🖥 Wall mode'],
+  wallOff:      ['Звичайний вигляд', 'Normal view'],
+  fsTitle:      ['На весь екран', 'Full screen'],
+  ctlTitle:     ['Вхідний струм і струм заряду: записати в GX', 'Input current and charge current: write to GX'],
+  ctlBtn:       ['⚡ Ліміти: вхід {in} · заряд {chg}', '⚡ Limits: input {in} · charge {chg}'],
+  settingsBtn:  ['⚙ Налаштування', '⚙ Settings'],
+  // cards
+  socLbl:       ['Заряд батареї', 'Battery charge'],
+  reserveWord:  ['Резерв', 'Reserve'],
+  toFull:       ['До повного заряду', 'Time to full'],
+  toEmpty:      ['До розряду', 'Time to empty'],
+  disTo:        ['(до {r} %)', '(to {r} %)'],
+  qIn:          ['Вхід', 'Input'],
+  qChg:         ['Заряд', 'Charge'],
+  qInTitle:     ['Вхідний струм з мережі (запис у GX)', 'Grid input current (writes to GX)'],
+  qChgTitle:    ['Струм заряду батареї, ліміт DVCC (запис у GX)', 'Battery charge current, DVCC limit (writes to GX)'],
+  gridLbl:      ['Мережа', 'Grid'],
+  loadLbl:      ['Навантаження', 'Load'],
+  batLbl:       ['Батарея', 'Battery'],
+  modeLbl:      ['Режим', 'Mode'],
+  chartLbl:     ['Останні 15 хвилин', 'Last 15 minutes'],
+  lgChg:        ['заряд батареї', 'battery charging'],
+  lgDis:        ['розряд батареї', 'battery discharging'],
+  lgLoad:       ['навантаження', 'load'],
+  note:         ['Час рахується за згладженим струмом батареї (вікно задається в налаштуваннях): до розряду — від поточного SoC до резерву, до заряду — до 100 %. Прогноз заряду оптимістичний: наприкінці (фаза CV / балансування) струм падає й останні відсотки йдуть довше.', 'Times use the smoothed battery current (the window is set in settings): to empty — from the current SoC down to the reserve, to full — up to 100 %. The charge estimate is optimistic: near the end (CV phase / balancing) the current drops and the last percent take longer.'],
+  // settings
+  settingsTitle:['Налаштування', 'Settings'],
+  fUrl:         ['Адреса MQTT WebSocket на GX', 'GX MQTT WebSocket address'],
+  fUrlHint:     ['Зазвичай ws://<IP GX>:9001. У нових Venus OS також ws://<IP GX>/websocket-mqtt', 'Usually ws://<GX IP>:9001. Newer Venus OS also has ws://<GX IP>/websocket-mqtt'],
+  fPortal:      ['VRM Portal ID (необов’язково)', 'VRM Portal ID (optional)'],
+  fPortalPh:    ['визначиться сам', 'detected automatically'],
+  fUser:        ['Логін (необов’язково)', 'Username (optional)'],
+  fPw:          ['Пароль GX (необов’язково)', 'GX password (optional)'],
+  fPwHint:      ['Не зберігається', 'Not saved'],
+  fCap:         ['Ємність батареї, А·год', 'Battery capacity, Ah'],
+  fCapPh:       ['з BMS', 'from BMS'],
+  fCapHint:     ['Порожньо — взяти з BMS', 'Empty — use the BMS value'],
+  fRes:         ['Резерв SoC, %', 'Reserve SoC, %'],
+  fResPh:       ['з ESS', 'from ESS'],
+  fResHint:     ['Порожньо — мін. SoC з ESS', 'Empty — ESS minimum SoC'],
+  fChgW:        ['Потужність заряду від мережі, Вт', 'Grid charging power, W'],
+  fChgWPh:      ['з GX', 'from GX'],
+  fChgWHint:    ['Для прогнозу «дадуть світло — скільки заряджатися до 100 %». Порожньо — за лімітами GX (DVCC, BMS, зарядний пристрій, вхід)', 'For the “grid is back — how long to 100 %” estimate. Empty — from the GX limits (DVCC, BMS, charger, input)'],
+  fTau:         ['Згладжування, с', 'Smoothing, s'],
+  fTauHint:     ['Більше — спокійніші цифри, але повільніша реакція на зміну навантаження', 'Higher — steadier numbers, but a slower reaction to load changes'],
+  fGridW:       ['Допустима потужність вводу (мережі), Вт', 'Allowed grid input power, W'],
+  fGridWHint:   ['Для індикатора «ввід завантажено на …%». 16 А × 230 В ≈ 3500 Вт', 'For the “grid input at …%” bar. 16 A × 230 V ≈ 3500 W'],
+  quickTitle:   ['Швидкі кнопки', 'Quick buttons'],
+  fQInMin:      ['Вхід: мін., А', 'Input: min, A'],
+  fQInMax:      ['Вхід: макс., А', 'Input: max, A'],
+  fQChgMin:     ['Заряд: мін., А', 'Charge: min, A'],
+  fQChgMax:     ['Заряд: макс., А', 'Charge: max, A'],
+  quickHint:    ['Середня кнопка — посередині між мін. і макс. «Вхід» — струм з мережі, «Заряд» — ліміт струму заряду DVCC.',
+                 'The middle button is halfway between min and max. “Input” is the grid current, “Charge” is the DVCC charge-current limit.'],
+  wallTitle:    ['Настінний режим і сповіщення', 'Wall mode and alerts'],
+  fWall:        ['Настінний режим: великий шрифт, годинник, екран не гасне', 'Wall mode: large text, clock, screen stays on'],
+  fSnd:         ['Звук сповіщень (зникла / повернулася мережа, батарея сідає)', 'Alert sounds (grid lost / restored, battery low)'],
+  fQuiet:       ['Уночі без звуку, крім «батарея на резерві»', 'Silent at night, except “battery at reserve”'],
+  fLow:         ['Попереджати, коли SoC нижче, %', 'Warn when SoC is below, %'],
+  fLowPh:       ['резерв + 10', 'reserve + 10'],
+  fNf:          ['Ніч з, год', 'Night from, h'],
+  fNt:          ['до, год', 'to, h'],
+  fNd:          ['Яскравість уночі, %', 'Night brightness, %'],
+  nightHint:    ['Уночі (лише в настінному режимі) екран пригасає; дотик — яскраво на хвилину. Порожні години — без нічного режиму.', 'At night (wall mode only) the screen dims; a tap brightens it for a minute. Empty hours — no night mode.'],
+  testSnd:      ['▶ Перевірити звуки', '▶ Test sounds'],
+  cancel:       ['Скасувати', 'Cancel'],
+  saveConnect:  ['Зберегти й підключитися', 'Save and connect'],
+  // limits dialog
+  ctlH:         ['Ліміти — запис у GX', 'Limits — write to GX'],
+  cInLbl:       ['Вхідний струм з мережі, А', 'Grid input current, A'],
+  cInHint:      ['Межа на все разом: дім + заряд батареї (1 А ≈ 230 Вт). При слабкій мережі зменште: заряд зменшиться, а якщо дому не вистачить — MultiPlus додасть із батареї (PowerAssist).', 'One limit for everything: house + battery charging (1 A ≈ 230 W). On a weak grid lower it: charging is cut first, and if the house needs more, the MultiPlus adds from the battery (PowerAssist).'],
+  cChgLbl:      ['Струм заряду батареї (DVCC), А', 'Battery charge current (DVCC), A'],
+  cChgHint:     ['Обмежує заряд з будь-яких джерел (1 А ≈ 51 Вт). 0 — заряд зупинено.', 'Limits charging from any source (1 A ≈ 51 W). 0 — charging stopped.'],
+  noLimit:      ['без ліміту', 'no limit'],
+  noLimitTitle: ['Зняти обмеження DVCC', 'Remove the DVCC limit'],
+  apply:        ['Застосувати', 'Apply'],
+  close:        ['Закрити', 'Close'],
+  toastTitle:   ['Торкніться, щоб закрити', 'Tap to close'],
+  // units
+  uW: ['Вт', 'W'], ukW: ['кВт', 'kW'], uWh: ['Вт·год', 'Wh'], ukWh: ['кВт·год', 'kWh'],
+  uA: ['А', 'A'], uV: ['В', 'V'], uAh: ['А·год', 'Ah'], uH: ['год', 'h'], uMin: ['хв', 'min'],
+  uDays: ['діб', 'days'], uPctH: ['%/год', '%/h'], uS: ['с', 's'],
+  atToday:      ['приблизно о {t}', 'around {t}'],
+  atTomorrow:   ['приблизно завтра о {t}', 'around {t} tomorrow'],
+  atDate:       ['приблизно {d} о {t}', 'around {t}, {d}'],
+  // connection
+  connecting:   ['Підключення до {u}…', 'Connecting to {u}…'],
+  badUrl:       ['Неправильна адреса: {u}', 'Invalid address: {u}'],
+  findPortal:   ['Підключено, шукаю Portal ID…', 'Connected, looking for the Portal ID…'],
+  refused:      ['GX відмовив у доступі (код {c})', 'GX refused access (code {c})'],
+  needPw:       [': потрібен пароль GX', ': GX password required'],
+  noConn:       ['Немає зв’язку з {u}', 'No connection to {u}'],
+  tryOther:     [', пробую іншу адресу…', ', trying another address…'],
+  retry5:       [', повтор через 5 с', ', retrying in 5 s'],
+  localHint:    ['. На телефоні імена .local часто не працюють: вкажіть IP у ⚙', '. Phones often can’t resolve .local names: enter the IP in ⚙'],
+  waitData:     ['Portal ID {id}, чекаю дані…', 'Portal ID {id}, waiting for data…'],
+  online:       ['GX {id} · онлайн', 'GX {id} · online'],
+  stale:        ['Дані не надходять {s} с', 'No data for {s} s'],
+  demoConn:     ['Демо-режим: дані симулюються', 'Demo mode: simulated data'],
+  // alerts
+  evLost:       ['Зникла мережа', 'Grid lost'],
+  evRestore:    ['Мережа повернулася', 'Grid restored'],
+  evLow:        ['Батарея сідає', 'Battery low'],
+  evReserve:    ['Батарея на резерві', 'Battery at reserve'],
+  outLasted:    ['відключення тривало {d}', 'outage lasted {d}'],
+  atTime:       ['о {t}', 'at {t}'],
+  lowToEmpty:   [', до розряду {d}', ', {d} to empty'],
+  // charge limits
+  whyDvcc:      ['ліміт DVCC', 'DVCC limit'],
+  whyBms:       ['ліміт BMS', 'BMS limit'],
+  whyCharger:   ['макс. струм зарядного', 'charger max current'],
+  whyGx:        ['ліміт GX', 'GX limit'],
+  whyEss:       ['ліміт ESS', 'ESS limit'],
+  whyInput:     ['вхід {a} А мінус навантаження', 'input {a} A minus load'],
+  whySettings:  ['з налаштувань', 'from settings'],
+  whyNone:      ['GX не повідомив ліміти, взято 1,5 кВт', 'GX reported no limits, using 1.5 kW'],
+  // battery charge and forecasts
+  capTxt:       ['ємність {ah} ≈ {wh}', 'capacity {ah} ≈ {wh}'],
+  capUnknown:   ['ємність невідома', 'capacity unknown'],
+  reserveTxt:   ['резерв {r} %', 'reserve {r} %'],
+  noData:       ['немає даних', 'no data'],
+  setCap:       ['вкажіть ємність батареї в налаштуваннях', 'set the battery capacity in settings'],
+  full:         ['повна', 'full'],
+  topping:      ['іде дозаряд / балансування', 'topping off / balancing'],
+  charged:      ['заряджена', 'charged'],
+  chgCur:       ['струм заряду {a}', 'charge current {a}'],
+  blocked:      ['заборонено', 'blocked'],
+  chgBlocked:   ['заряд від мережі зараз заборонено · {why}', 'grid charging is blocked now · {why}'],
+  ifGridBack:   ['якщо дадуть світло зараз', 'if the grid returns now'],
+  forecast:     ['прогноз', 'estimate'],
+  reserveVal:   ['резерв', 'reserve'],
+  atReserve:    ['SoC уже на рівні резерву', 'SoC is already at reserve'],
+  disCur:       ['струм розряду {a}', 'discharge current {a}'],
+  ifGridDrops:  ['якщо вимкнуть мережу зараз', 'if the grid drops now'],
+  loadW:        ['навантаження {w}', 'load {w}'],
+  // tiles
+  noGridWall:   ['НЕМАЄ МЕРЕЖІ', 'NO GRID'],
+  gridWall:     ['МЕРЕЖА Є', 'GRID ON'],
+  noGridShort:  ['НЕМАЄ', 'OFF'],
+  noGridFor:    ['немає мережі {d}', 'no grid for {d}'],
+  onBattery:    ['робота від батареї', 'running on battery'],
+  noticedAt:    ['помічено о {t}', 'noticed at {t}'],
+  since:        ['з {t}', 'since {t}'],
+  inputSrc:     ['вхід: {s}', 'input: {s}'],
+  exporting:    ['віддача в мережу', 'exporting to grid'],
+  lastOutage:   ['минуле відключення {d}, до {t}', 'last outage {d}, until {t}'],
+  gridLoadTxt:  ['ввід завантажено на {p} % з {c}', 'grid input at {p} % of {c}'],
+  exceeded:     [' · ПЕРЕВИЩЕНО', ' · EXCEEDED'],
+  acOut:        ['AC-виходи', 'AC outputs'],
+  invLoadBat:   ['інвертор завантажено на {p} % з {n}', 'inverter at {p} % of {n}'],
+  invLoadGrid:  ['{p} % від потужності інвертора ({n})', '{p} % of inverter power ({n})'],
+  overload:     ['ПЕРЕВАНТАЖЕННЯ інвертора · ', 'Inverter OVERLOAD · '],
+  nearOverload: ['близько до перевантаження · ', 'near overload · '],
+  stateCode:    ['код {c}', 'code {c}'],
+  now:          ['зараз', 'now'],
+  // limits
+  nowVal:       ['зараз {v}', 'now {v}'],
+  nowInVal:     ['зараз {a} ≈ {w}', 'now {a} ≈ {w}'],
+  inFixed:      ['GX повідомляє, що вхідний струм задано на панелі/у VEConfigure і віддалено не змінюється.', 'GX reports that the input current is set on a panel/in VEConfigure and cannot be changed remotely.'],
+  dvccOff:      ['DVCC на GX вимкнено — цей ліміт не діє.', 'DVCC is off on the GX — this limit has no effect.'],
+  noGx:         ['Немає зв’язку з GX', 'No connection to GX'],
+  enterNum:     ['Введіть число', 'Enter a number'],
+  confirmWrite: ['Записати в GX: {l}?', 'Write to GX: {l}?'],
+  sent:         ['Надіслано: {l}…', 'Sent: {l}…'],
+  applied:      ['✓ GX застосував: {l}', '✓ GX applied: {l}'],
+  clamped:      ['GX встановив {v} замість запитаного (обмеження пристрою)', 'GX set {v} instead of the requested value (device limit)'],
+  notConfirmed: ['✗ GX не підтвердив запис, значення лишилося {v}. Запис через MQTT заборонено або значення поза діапазоном.', '✗ GX did not confirm the write; the value is still {v}. MQTT writes are disabled or the value is out of range.'],
+  lblIn:        ['вхідний струм {a} (≈ {w})', 'input current {a} (≈ {w})'],
+  lblChg:       ['струм заряду {a} (≈ {w})', 'charge current {a} (≈ {w})'],
+  lblChgOff:    ['струм заряду без обмеження DVCC', 'charge current without a DVCC limit'],
+  lblChgZero:   ['струм заряду 0 А — заряд зупинено', 'charge current 0 A — charging stopped'],
+  rangeIn:      ['Вхідний струм: від 1 до 50 А', 'Input current: 1 to 50 A'],
+  rangeChg:     ['Струм заряду: від 0 до 500 А', 'Charge current: 0 to 500 A'],
+};
+// system states and input sources: [uk, en]
+const STATES = { 0: ['Вимкнено', 'Off'], 1: ['Енергозбереження', 'Low power'], 2: ['Помилка', 'Fault'],
+  3: ['Заряд (bulk)', 'Charging (bulk)'], 4: ['Заряд (absorption)', 'Charging (absorption)'],
+  5: ['Заряд (float)', 'Charging (float)'], 6: ['Зберігання', 'Storage'], 7: ['Вирівнювання', 'Equalize'],
+  8: ['Транзит мережі', 'Passthru'], 9: ['Інвертування', 'Inverting'], 10: ['Допомога (PowerAssist)', 'Power assist'],
+  11: ['Блок живлення', 'Power supply'], 244: ['Sustain', 'Sustain'], 252: ['Зовнішнє керування', 'External control'],
+  256: ['Розряд', 'Discharging'], 257: ['Sustain', 'Sustain'], 258: ['Підзаряд', 'Recharge'], 259: ['Заряд за розкладом', 'Scheduled charge'] };
+const SOURCES = { 0: ['невідомо', 'unknown'], 1: ['мережа', 'grid'], 2: ['генератор', 'generator'], 3: ['берег', 'shore'], 240: ['немає', 'none'] };
+
+let LI = 0;   // index of the current language in LANGS
+function t(k, v) {
+  const e = TR[k]; let s = e ? (e[LI] ?? e[0]) : k;
+  return v ? s.replace(/\{(\w+)\}/g, (m, n) => (v[n] ?? m)) : s;
+}
+const dc = x => LI === 1 ? String(x) : String(x).replace('.', ',');   // decimal comma (uk) or point (en)
+const LOC = () => ['uk-UA', 'en-GB'][LI];
+// all static page texts from the table
+function applyLang() {
+  document.documentElement.lang = LANGS[LI];
+  document.title = t('title');
+  document.querySelectorAll('[data-i]').forEach(e => { e.textContent = t(e.dataset.i); });
+  document.querySelectorAll('[data-it]').forEach(e => { e.title = t(e.dataset.it); });
+  document.querySelectorAll('[data-ip]').forEach(e => { e.placeholder = t(e.dataset.ip); });
+  document.querySelectorAll('[data-q]').forEach(b => { b.textContent = dc(b.dataset.q) + ' ' + t('uA'); });
+  document.querySelectorAll('[data-qc]').forEach(b => { b.textContent = dc(b.dataset.qc) + ' ' + t('uA'); });
+  $('btnDemo').textContent = cfg.demo ? t('demoExit') : t('demo');
+  $('selLang').value = LANGS[LI];
+}
+
+/* ---------- Settings ---------- */
+// The default address is venus.local. Android phones don't resolve *.local names:
+// there the GX IP is set in settings or with the ?host= parameter.
+const DEF = { url: 'ws://venus.local:9001', portal: '', user: '', capAh: '', reserve: '', chgPw: '', gridW: 3500, tau: 60, demo: false,
+  wall: false, snd: true, quietNight: true, lowSoc: '', nightFrom: 23, nightTo: 7, nightDim: 30, lang: 'uk',
+  qInMin: 10, qInMax: 16, qChgMin: 20, qChgMax: 35 };   // quick buttons: min and max, the middle one is halfway between
+function loadCfg() {
+  let c = {};
+  try { c = JSON.parse(localStorage.getItem('victronMon') || '{}') || {}; } catch (e) {}
+  c = Object.assign({}, DEF, c);
+  const q = new URLSearchParams(location.search);
+  if (q.get('host')) c.url = 'ws://' + q.get('host') + ':9001';
+  if (q.get('url')) c.url = q.get('url');
+  if (q.has('demo')) c.demo = q.get('demo') !== '0';
+  if (q.has('wall')) c.wall = q.get('wall') !== '0';
+  if (LANGS.includes(q.get('lang'))) c.lang = q.get('lang');
+  return c;
+}
+function saveCfg() { try { localStorage.setItem('victronMon', JSON.stringify(cfg)); } catch (e) {} }
+const cfg = loadCfg();
+LI = Math.max(0, LANGS.indexOf(cfg.lang));
+let sessionPw = '';
+
+/* ---------- State ---------- */
+const S = {};                 // path after N/<portal>/ → value
+let urlTry = 0;
+let mq = null, portalId = null, kaTimer = null, retryTimer = null, demoTimer = null;
+let emaL = null;   // smoothed house load, W
+let emaFastUntil = 0, limKey = null;   // short smoothing after a mode/limit change; limits snapshot
+function kickEma() { emaFastUntil = Date.now() + 30000; }
+let lastMsg = 0, emaI = null, emaP = null, lastTick = Date.now(), hist = [], lastHist = 0;
+
+const $ = id => document.getElementById(id);
+const num = v => (typeof v === 'number' && isFinite(v)) ? v : null;
+// connection status; text is a function so the line can be re-rendered when the language changes
+let connFn = null;
+function setConn(cls, text) { connFn = text; $('conn').className = 'conn ' + cls; $('connText').textContent = text(); }
+
+function stop(keepHist) {
+  clearInterval(kaTimer); clearTimeout(retryTimer); clearInterval(demoTimer);
+  if (mq) { mq.close(); mq = null; }
+  portalId = null; for (const k in S) delete S[k];
+  emaI = emaP = emaL = null; emaFastUntil = 0; limKey = null; lastMsg = 0; if (!keepHist) hist = [];
+}
+
+// Which addresses to try. If an address is set in settings, only that one.
+// Page served by the GX itself (http(s)://<GX>/monitor/, default port): connect to that GX.
+// Otherwise (a file on a PC): venus.local.
+function urlList() {
+  if (cfg.url !== DEF.url) return [cfg.url];
+  const L = location;
+  if (/^https?:$/.test(L.protocol) && L.hostname && !L.port) {
+    return L.protocol === 'https:' ? ['wss://' + L.host + '/websocket-mqtt']
+      : ['ws://' + L.host + '/websocket-mqtt', 'ws://' + L.hostname + ':9001'];
+  }
+  return [DEF.url];
+}
+
+function start(keepHist) {
+  stop(keepHist === true);
+  OUT = cfg.demo ? {} : loadOut(); prevGrid = null; lowArmed = resArmed = true;
+  $('btnDemo').textContent = cfg.demo ? t('demoExit') : t('demo');
+  if (cfg.demo) { startDemo(); return; }
+  const urls = urlList();
+  const idx = urlTry % urls.length, url = urls[idx];
+  urlTry = idx + 1;
+  setConn('wait', () => t('connecting', { u: url }));
+  let m;
+  try {
+    m = mq = new MiniMqtt(url, { clientId: 'webmon-' + Math.random().toString(16).slice(2, 10), username: cfg.user, password: sessionPw });
+  } catch (e) { setConn('bad', () => t('badUrl', { u: url })); return; }
+  m.onstate = (s, code) => {
+    if (m !== mq) return;
+    if (s === 'connected') {
+      urlTry = idx;  // after a drop, try the working address first
+      if (cfg.portal) usePortal(cfg.portal.trim());
+      else { setConn('wait', () => t('findPortal')); m.subscribe(['N/+/system/0/Serial']); }
+    } else if (s === 'refused') {
+      setConn('bad', () => t('refused', { c: code }) + (code === 4 || code === 5 ? t('needPw') : ''));
+    } else if (s === 'closed') {
+      const more = idx + 1 < urls.length;
+      setConn('bad', () => t('noConn', { u: url }) + (more ? t('tryOther')
+        : t('retry5') + (/\.local[:/]/.test(url) ? t('localHint') : '')));
+      retryTimer = setTimeout(() => start(true), more ? 300 : 5000);
+    }
+  };
+  m.onmessage = onMsg;
+  m.connect();
+}
+
+function usePortal(id) {
+  portalId = id;
+  setConn('wait', () => t('waitData', { id }));
+  mq.subscribe([
+    `N/${id}/system/0/#`,
+    `N/${id}/battery/+/InstalledCapacity`,
+    `N/${id}/battery/+/Capacity`,
+    `N/${id}/settings/0/Settings/CGwacs/BatteryLife/MinimumSocLimit`,
+    `N/${id}/vebus/+/Ac/Out/P`,                       // inverter output power
+    `N/${id}/vebus/+/Ac/Out/NominalInverterPower`,    // its continuous power rating (MultiPlus-II 48/3000: 2500 W)
+    `N/${id}/vebus/+/Alarms/Overload`,                // 0 ok, 1 warning, 2 overload
+    // charge current limits (for the "grid is back: how long to charge" forecast)
+    `N/${id}/vebus/+/Dc/0/MaxChargeCurrent`,
+    `N/${id}/vebus/+/BatteryOperationalLimits/MaxChargeCurrent`,
+    `N/${id}/vebus/+/Ac/ActiveIn/CurrentLimit`,
+    `N/${id}/vebus/+/Ac/ActiveIn/CurrentLimitIsAdjustable`,
+    `N/${id}/battery/+/Info/MaxChargeCurrent`,
+    `N/${id}/settings/0/Settings/SystemSetup/MaxChargeCurrent`,
+    `N/${id}/settings/0/Settings/CGwacs/MaxChargePower`,
+  ]);
+  // keepalive: newer Venus OS sends no data without it. The first one asks for a full resend of all values.
+  mq.publish(`R/${id}/keepalive`, '');
+  mq.publish(`R/${id}/system/0/Serial`, '');
+  kaTimer = setInterval(() => mq && mq.publish(`R/${id}/keepalive`, '{"keepalive-options":["suppress-republish"]}'), 30000);
+}
+
+function onMsg(topic, payload) {
+  const parts = topic.split('/');
+  if (parts[0] !== 'N') return;
+  if (!portalId) { if (topic.endsWith('/system/0/Serial')) usePortal(parts[1]); return; }
+  if (parts[1] !== portalId) return;
+  let v = null;
+  if (payload) { try { v = JSON.parse(payload).value; } catch (e) {} }
+  S[parts.slice(2).join('/')] = v;
+  lastMsg = Date.now();
+}
+
+/* ---------- Outage log (survives a page reload) ---------- */
+let OUT = {}, prevGrid = null, lowArmed = true, resArmed = true;
+function loadOut() { try { return JSON.parse(localStorage.getItem('victronOutage') || '{}') || {}; } catch (e) { return {}; } }
+function saveOut() { if (cfg.demo) return; try { localStorage.setItem('victronOutage', JSON.stringify(OUT)); } catch (e) {} }
+function hhmm(ts) {
+  const d = new Date(ts), tm = d.toLocaleTimeString(LOC(), { hour: '2-digit', minute: '2-digit' });
+  return d.toDateString() === new Date().toDateString() ? tm : d.toLocaleDateString(LOC(), { day: 'numeric', month: 'short' }) + ' ' + tm;
+}
+// outage duration; approx means the page did not see the outage start (it was closed)
+function outDur(ms, approx) { if (approx && ms < 60e3) return ''; return (approx ? '≥ ' : '') + fmtDur(ms / 3600e3); }
+
+/* ---------- Sound, flash, messages ---------- */
+let actx = null, toastTimer = null;
+function audio() {
+  try {
+    if (!actx) { const C = window.AudioContext || window.webkitAudioContext; if (!C) return null; actx = new C(); }
+    if (actx.state === 'suspended') actx.resume().catch(() => {});
+  } catch (e) { return null; }
+  return actx;
+}
+function beep(tones, rep) {
+  const a = audio(); if (!a) return;
+  let t = a.currentTime + 0.05;
+  for (let r = 0; r < rep; r++) {
+    for (const [f, d] of tones) {
+      if (f) {
+        const o = a.createOscillator(), g = a.createGain();
+        o.type = 'sine'; o.frequency.value = f;
+        g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.4, t + 0.01);
+        g.gain.setValueAtTime(0.4, t + d - 0.03); g.gain.linearRampToValueAtTime(0, t + d);
+        o.connect(g).connect(a.destination); o.start(t); o.stop(t + d + 0.02);
+      }
+      t += d;
+    }
+    t += 0.4;
+  }
+}
+const EV = {
+  lost:    { msg: 'evLost',    color: 'var(--bad)',  tones: [[880, .18], [660, .18], [440, .4]], rep: 2 },
+  restore: { msg: 'evRestore', color: 'var(--ok)',   tones: [[523, .14], [659, .14], [784, .3]], rep: 1 },
+  low:     { msg: 'evLow',     color: 'var(--warn)', tones: [[1000, .12], [0, .08], [1000, .12]], rep: 3 },
+  reserve: { msg: 'evReserve', color: 'var(--bad)',  tones: [[1200, .1], [0, .06], [1200, .1], [0, .06], [1200, .1]], rep: 4, loud: true },
+};
+function showToast(msg, color) {
+  const t = $('toast'); t.textContent = msg; t.style.borderColor = color; t.hidden = false;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.hidden = true; }, 5 * 60e3);
+}
+function flash(color) { const f = $('flash'); f.style.background = color; f.classList.remove('on'); void f.offsetWidth; f.classList.add('on'); }
+function alertEv(kind, text) {
+  const e = EV[kind];
+  showToast(t(e.msg) + (text ? ' · ' + text : ''), e.color);
+  flash(e.color);
+  nightWakeUntil = Date.now() + 60e3;
+  if (cfg.snd && !(cfg.quietNight && isNightHour() && !e.loud)) beep(e.tones, e.rep);
+}
+
+/* ---------- Wall mode: night, keep the screen on ---------- */
+let nightWakeUntil = 0, wakeLock = null;
+function isNightHour() {
+  if (cfg.nightFrom === '' || cfg.nightTo === '') return false;
+  const f = +cfg.nightFrom, t = +cfg.nightTo;
+  if (!isFinite(f) || !isFinite(t) || f === t) return false;
+  const h = new Date().getHours();
+  return f < t ? (h >= f && h < t) : (h >= f || h < t);
+}
+async function keepAwake() {
+  if (!cfg.wall || wakeLock || document.visibilityState !== 'visible' || !('wakeLock' in navigator)) return;
+  try { wakeLock = await navigator.wakeLock.request('screen'); wakeLock.addEventListener('release', () => { wakeLock = null; }); } catch (e) {}
+}
+function applyWall() {
+  document.body.classList.toggle('wall', !!cfg.wall);
+  $('btnWall').textContent = cfg.wall ? t('wallOff') : t('wallOn');
+  if (cfg.wall) keepAwake();
+  else if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+}
+
+/* ---------- Calculations and rendering ---------- */
+function sumL(prefix) {
+  let s = null;
+  for (const l of ['L1', 'L2', 'L3']) { const v = num(S[`${prefix}/${l}/Power`]); if (v != null) s = (s || 0) + v; }
+  return s;
+}
+function batInsts() {
+  const abs = S['system/0/ActiveBatteryService'];
+  const m = typeof abs === 'string' && abs.match(/battery\/(\d+)/);
+  return m ? [m[1]] : [...new Set(Object.keys(S).map(k => (k.match(/^battery\/(\d+)\//) || [])[1]).filter(Boolean))];
+}
+function batCapAh() {
+  for (const i of batInsts()) {
+    const c = num(S[`battery/${i}/InstalledCapacity`]) ?? num(S[`battery/${i}/Capacity`]);
+    if (c) return c;
+  }
+  return null;
+}
+function vebusInst() {
+  const vi = num(S['system/0/VebusInstance']);
+  if (vi != null) return vi;
+  const k = Object.keys(S).find(k => /^vebus\/\d+\//.test(k));
+  return k ? k.split('/')[1] : null;
+}
+// The current the GX will charge the battery with from the grid: the tightest of the limits it publishes itself.
+// load is the current load, W: when the grid returns it also goes through the input and takes from the charger.
+function chargeLimit(load) {
+  const vi = vebusInst(), bi = batInsts()[0], c = [];
+  const add = (v, why) => { v = num(v); if (v != null && v >= 0) c.push({ a: v, why }); };
+  add(S['settings/0/Settings/SystemSetup/MaxChargeCurrent'], t('whyDvcc'));           // −1 = off
+  if (bi != null) add(S[`battery/${bi}/Info/MaxChargeCurrent`], t('whyBms'));
+  if (vi != null) {
+    add(S[`vebus/${vi}/Dc/0/MaxChargeCurrent`], t('whyCharger'));
+    add(S[`vebus/${vi}/BatteryOperationalLimits/MaxChargeCurrent`], t('whyGx'));
+  }
+  const essW = num(S['settings/0/Settings/CGwacs/MaxChargePower']);                    // −1 = no limit
+  if (essW != null && essW >= 0) add(essW / NOM_V, t('whyEss'));
+  const inA = vi == null ? null : num(S[`vebus/${vi}/Ac/ActiveIn/CurrentLimit`]);
+  if (inA > 0 && load != null) add(Math.max(0, (inA * 230 - load) * 0.93 / NOM_V), t('whyInput', { a: dc(inA) }));
+  return c.length ? c.reduce((m, x) => x.a < m.a - 0.05 ? x : m) : null;
+}
+// load zones: ≥ 80 % red, 50–80 orange, 30–50 green, < 30 calm blue
+const zone = pct => pct >= 80 ? 'bad' : pct >= 50 ? 'dis' : pct >= 30 ? 'ok' : 'acc';
+const fmtKw = w => dc(+(w / 1000).toFixed(2)) + ' ' + t('ukW');
+function fmtW(w) {
+  if (w == null) return '—';
+  return Math.abs(w) >= 1000 ? dc((w / 1000).toFixed(2)) + ' ' + t('ukW') : Math.round(w) + ' ' + t('uW');
+}
+function fmtDur(h) {
+  if (!isFinite(h) || h < 0) return '—';
+  if (h >= 72) return dc((h / 24).toFixed(1)) + ' ' + t('uDays');
+  const m = Math.round(h * 60), hh = Math.floor(m / 60), mm = m % 60;
+  if (m === 0) return '< 1 ' + t('uMin');
+  return hh ? `${hh} ${t('uH')} ${String(mm).padStart(2, '0')} ${t('uMin')}` : `${mm} ${t('uMin')}`;
+}
+// nominal battery voltage for Ah → Wh (LiFePO4 16S = 51.2 V)
+const NOM_V = 51.2;
+function fmtWh(wh) { return wh >= 1000 ? dc((wh / 1000).toFixed(1)) + ' ' + t('ukWh') : Math.round(wh) + ' ' + t('uWh'); }
+// big value + a smaller note in brackets
+function setBig(el, text, extra) {
+  el.textContent = '';
+  const a = document.createElement('span'); a.textContent = text; el.append(a);
+  if (extra) { const r = document.createElement('span'); r.className = 'rate'; r.textContent = `(${extra})`; el.append(r); }
+}
+// how many percent of the battery go out/come in per hour
+function pctH(amps, capAh) {
+  const p = amps / capAh * 100;
+  return (p < 10 ? dc(p.toFixed(1)) : Math.round(p)) + ' ' + t('uPctH');
+}
+function fmtAt(h) {
+  if (!isFinite(h) || h > 24 * 30) return '';
+  const d = new Date(Date.now() + h * 3600e3), now = new Date();
+  const tm = d.toLocaleTimeString(LOC(), { hour: '2-digit', minute: '2-digit' });
+  const days = Math.round((new Date(d).setHours(0, 0, 0, 0) - new Date(now).setHours(0, 0, 0, 0)) / 864e5);
+  if (days === 0) return t('atToday', { t: tm });
+  if (days === 1) return t('atTomorrow', { t: tm });
+  return t('atDate', { t: tm, d: d.toLocaleDateString(LOC(), { day: 'numeric', month: 'short' }) });
+}
+
+function tick() {
+  const now = Date.now(), dt = Math.min(10, (now - lastTick) / 1000); lastTick = now;
+  const soc = num(S['system/0/Dc/Battery/Soc']);
+  const I = num(S['system/0/Dc/Battery/Current']);
+  const V = num(S['system/0/Dc/Battery/Voltage']);
+  let P = num(S['system/0/Dc/Battery/Power']); if (P == null && I != null && V != null) P = I * V;
+  const T = num(S['system/0/Dc/Battery/Temperature']);
+  const load = sumL('system/0/Ac/Consumption');
+  const grid = sumL('system/0/Ac/Grid');
+  const src = num(S['system/0/Ac/ActiveIn/Source']);
+  const st = num(S['system/0/SystemState/State']);
+
+  // smoothing (exponential, time constant = cfg.tau).
+  // The average must not drag the previous mode along, so it starts over:
+  //  - when the battery moves between charge / discharge / idle (charging resumed after a pause, grid lost/returned);
+  //  - when limits change (input current, DVCC/BMS/charger charge current) or the grid comes or goes:
+  //    then for ~30 s the smoothing is short (3 s) while the current settles, then back to normal.
+  const stOf = x => x > 1 ? 1 : x < -1 ? -1 : 0;
+  if (I != null && emaI != null && stOf(I) !== stOf(emaI)) { emaI = I; emaP = P; kickEma(); }
+  const vi0 = vebusInst(), lk = [src === 240, S['settings/0/Settings/SystemSetup/MaxChargeCurrent'],
+    vi0 == null ? null : S[`vebus/${vi0}/Ac/ActiveIn/CurrentLimit`], vi0 == null ? null : S[`vebus/${vi0}/Dc/0/MaxChargeCurrent`],
+    batInsts().map(b => S[`battery/${b}/Info/MaxChargeCurrent`])[0], S['settings/0/Settings/CGwacs/MaxChargePower']].join('|');
+  if (limKey != null && lk !== limKey) kickEma();
+  limKey = lk;
+  const a = 1 - Math.exp(-dt / (now < emaFastUntil ? 3 : Math.max(1, +cfg.tau || 60)));
+  if (I != null) emaI = emaI == null ? I : emaI + a * (I - emaI);
+  if (P != null) emaP = emaP == null ? P : emaP + a * (P - emaP);
+  if (load != null) emaL = emaL == null ? load : emaL + a * (load - emaL);
+
+  // connection status
+  if (!cfg.demo && portalId) {
+    if (lastMsg && now - lastMsg < 20000) setConn('ok', () => t('online', { id: portalId }));
+    else if (lastMsg) setConn('bad', () => t('stale', { s: Math.round((now - lastMsg) / 1000) }));
+  }
+
+  // SoC
+  const capAh = (+cfg.capAh > 0) ? +cfg.capAh : batCapAh();
+  const essMin = num(S['settings/0/Settings/CGwacs/BatteryLife/MinimumSocLimit']);
+  const reserve = (cfg.reserve !== '' && cfg.reserve != null && isFinite(+cfg.reserve)) ? +cfg.reserve : (essMin ?? 0);
+  setBig($('soc'), soc == null ? '—' : dc(soc.toFixed(soc < 10 ? 1 : 0)) + ' %',
+    soc != null && capAh ? fmtWh(capAh * soc / 100 * NOM_V) : '');
+  const bar = $('socBar'); bar.style.width = (soc ?? 0) + '%';
+  bar.style.background = soc == null ? 'var(--mut)' : soc <= reserve + 5 ? 'var(--bad)' : soc < 40 ? 'var(--warn)' : 'var(--ok)';
+  const rm = $('resMark'); rm.style.display = reserve > 0 ? 'block' : 'none'; rm.style.left = reserve + '%';
+  const vb = V == null ? '' : dc(V.toFixed(2)) + ' ' + t('uV');
+  $('socSub').textContent = [capAh ? t('capTxt', { ah: Math.round(capAh) + ' ' + t('uAh'), wh: fmtWh(capAh * NOM_V) }) : t('capUnknown'),
+    reserve ? t('reserveTxt', { r: reserve }) : '', vb].filter(Boolean).join(' · ');
+  // forecasts: one card, two fields.
+  //  charge    — while charging: from the actual current; otherwise a "grid comes back" forecast from the expected charge current;
+  //  discharge — while discharging: from the actual current; otherwise a "grid goes down" forecast at the current house load.
+  const TH = 0.3; // A — below this counts as idle
+  let dis = '—', disSub = '', chg = '—', chgSub = '', disRate = '', chgRate = '', disFc = false, chgFc = false;
+  const mode = soc == null || emaI == null ? 'none' : emaI < -TH ? 'dis' : emaI > TH ? 'chg' : 'idle';
+  $('disTo').textContent = reserve > 0 ? t('disTo', { r: reserve }) : '';
+  const amp = x => dc(x.toFixed(1)) + ' ' + t('uA');
+  if (mode === 'none') disSub = chgSub = t('noData');
+  else if (!capAh) disSub = chgSub = t('setCap');
+  else {
+    // --- charge ---
+    if (soc >= 99.5) { chg = t('full'); chgSub = mode === 'chg' ? t('topping') : t('charged'); }
+    else if (mode === 'chg') {
+      const h = capAh * (100 - soc) / 100 / emaI;
+      chg = fmtDur(h); chgRate = (emaP != null ? fmtW(emaP) + ' · ' : '') + pctH(emaI, capAh);
+      chgSub = fmtAt(h) + (cfg.wall ? '' : ' · ' + t('chgCur', { a: amp(emaI) }));
+    } else {
+      // expected charge current: from settings if a power is set; otherwise the tightest of the limits
+      // the GX publishes (DVCC, BMS, charger, ESS, input minus load); if there are none, 1500 W
+      chgFc = true;
+      let A, why;
+      const L = +cfg.chgPw > 0 ? null : chargeLimit(load);
+      if (+cfg.chgPw > 0) { A = +cfg.chgPw / NOM_V; why = t('whySettings'); }
+      else if (L) { A = L.a; why = L.why; }
+      else { A = 1500 / NOM_V; why = t('whyNone'); }
+      if (A < 0.5) { chg = t('blocked'); chgSub = t('chgBlocked', { why }); }
+      else {
+        const h = capAh * (100 - soc) / 100 / A;
+        chg = fmtDur(h); chgRate = fmtW(A * NOM_V) + ' · ' + pctH(A, capAh);
+        chgSub = `${fmtAt(h)} · ${src === 240 ? t('ifGridBack') : t('forecast')}` + (cfg.wall ? '' : ' · ' + why);
+      }
+    }
+    // --- discharge ---
+    if (soc <= reserve) { dis = t('reserveVal'); disSub = t('atReserve'); disFc = mode !== 'dis'; }
+    else if (mode === 'dis') {
+      const h = capAh * (soc - reserve) / 100 / -emaI;
+      dis = fmtDur(h); disRate = (emaP != null ? fmtW(-emaP) + ' · ' : '') + pctH(-emaI, capAh);
+      disSub = fmtAt(h) + (cfg.wall ? '' : ' · ' + t('disCur', { a: amp(-emaI) }));
+    } else if (emaL != null) {
+      // the battery gives more than the house takes: inverter efficiency ~92 % + ~20 W for the MultiPlus itself
+      disFc = true;
+      const w = Math.max(0, emaL) / 0.92 + 20, h = capAh * (soc - reserve) / 100 * NOM_V / w;
+      dis = fmtDur(h); disRate = fmtW(w) + ' · ' + pctH(w / NOM_V, capAh);
+      disSub = `${fmtAt(h)} · ${src === 240 ? t('forecast') : t('ifGridDrops')}` + (cfg.wall ? '' : ' · ' + t('loadW', { w: fmtW(emaL) }));
+    }
+  }
+  // time in big type + power and %/h smaller in brackets; the "what if" forecast is dimmed
+  setBig($('tChg'), chg, chgRate); $('tChgSub').textContent = chgSub; $('fChg').classList.toggle('fc', chgFc);
+  setBig($('tDis'), dis, disRate); $('tDisSub').textContent = disSub; $('fDis').classList.toggle('fc', disFc);
+  $('cardEta').className = 'card etacard ' + (mode === 'chg' || mode === 'dis' ? mode : '');
+
+  // grid: events and outage log
+  const gridOk = (src == null || src === 0) ? null : src !== 240;
+  if (gridOk !== null) {
+    if (!gridOk && !OUT.lostAt) { OUT.lostAt = now; OUT.approx = prevGrid === null; saveOut(); }
+    if (gridOk && OUT.lostAt) {
+      OUT.lastDur = now - OUT.lostAt; OUT.lastEnd = now; OUT.lastApprox = !!OUT.approx || prevGrid === null;
+      delete OUT.lostAt; delete OUT.approx; saveOut();
+    }
+    if (prevGrid !== null && gridOk !== prevGrid) {
+      if (gridOk) { const d = OUT.lastDur ? outDur(OUT.lastDur, OUT.lastApprox) : ''; alertEv('restore', d ? t('outLasted', { d }) : ''); }
+      else alertEv('lost', t('atTime', { t: hhmm(now) }) + (soc != null ? ` · SoC ${Math.round(soc)} %` : ''));
+    }
+    prevGrid = gridOk;
+  }
+
+  // battery running low / at the reserve
+  const lowTh = (cfg.lowSoc !== '' && cfg.lowSoc != null && isFinite(+cfg.lowSoc)) ? +cfg.lowSoc : reserve + 10;
+  if (soc != null) {
+    if (mode === 'dis' && resArmed && reserve > 0 && soc <= reserve + 0.5) { resArmed = lowArmed = false; alertEv('reserve', `SoC ${Math.round(soc)} %`); }
+    else if (mode === 'dis' && lowArmed && soc <= lowTh) { lowArmed = false; alertEv('low', `SoC ${Math.round(soc)} %` + (dis !== '—' ? t('lowToEmpty', { d: dis }) : '')); }
+    if (soc > lowTh + 3) lowArmed = true;
+    if (soc > reserve + 3) resArmed = true;
+  }
+
+  // tiles
+  const noGrid = gridOk === false;
+  $('tGrid').className = 'card tile wallkeep ' + (noGrid ? 'bad' : gridOk ? 'good' : '');
+  $('grid').textContent = cfg.wall ? (noGrid ? t('noGridWall') : gridOk ? t('gridWall') : '—') : (noGrid ? t('noGridShort') : fmtW(grid));
+  let gs = '';
+  if (noGrid) {
+    if (OUT.lostAt) {
+      const d = outDur(now - OUT.lostAt, OUT.approx);
+      gs = (d ? t('noGridFor', { d }) : t('onBattery')) + ' · ' + t(OUT.approx ? 'noticedAt' : 'since', { t: hhmm(OUT.lostAt) });
+    } else gs = t('onBattery');
+  } else if (gridOk) {
+    gs = (cfg.wall ? fmtW(grid) + ' · ' : '') + t('inputSrc', { s: SOURCES[src] ? SOURCES[src][LI] : src }) + (grid != null && grid < -20 ? ' · ' + t('exporting') : '');
+    const d = OUT.lastEnd ? outDur(OUT.lastDur, OUT.lastApprox) : '';
+    if (d) gs += ' · ' + t('lastOutage', { d, t: hhmm(OUT.lastEnd) });
+  }
+  $('gridSub').textContent = gs;
+  // grid input load: power from the grid / allowed input power (a setting, default 16 A × 230 V ≈ 3500 W)
+  const gridCap = +cfg.gridW > 0 ? +cfg.gridW : 3500;
+  let glvl = '';
+  if (gridOk && grid != null) {
+    const pct = Math.max(0, grid / gridCap * 100);
+    glvl = zone(pct);
+    $('gridBar').style.width = Math.min(100, pct) + '%';
+    $('gridBar').style.background = `var(--${glvl})`;
+    $('gridLoad').textContent = t('gridLoadTxt', { p: Math.round(pct), c: fmtKw(gridCap) }) + (pct >= 100 ? t('exceeded') : '');
+  } else $('gridLoad').textContent = '';
+  $('gridBarBox').hidden = !glvl;
+  $('tGrid').classList.toggle('hot', glvl === 'bad');
+
+  // wall mode: clock, night, screen, sound
+  $('clock').textContent = new Date().toLocaleTimeString(LOC(), { hour: '2-digit', minute: '2-digit' });
+  document.documentElement.style.setProperty('--dim', Math.max(5, Math.min(100, +cfg.nightDim || 30)) / 100);
+  document.body.classList.toggle('night', !!cfg.wall && isNightHour() && now > nightWakeUntil);
+  keepAwake();
+  $('wl').hidden = !(cfg.wall && wakeLock);
+  $('sndBadge').hidden = !(cfg.snd && (!actx || actx.state !== 'running'));
+  $('load').textContent = fmtW(load);
+  // inverter load level: output power / its continuous rating (taken from the GX itself)
+  const vi = vebusInst();
+  const nom = vi == null ? null : num(S[`vebus/${vi}/Ac/Out/NominalInverterPower`]);
+  const outP = (vi == null ? null : num(S[`vebus/${vi}/Ac/Out/P`])) ?? load;
+  const ovl = vi == null ? null : num(S[`vebus/${vi}/Alarms/Overload`]);
+  let ls = t('acOut'), lvl = '';
+  if (nom > 0 && outP != null) {
+    const pct = Math.max(0, outP / nom * 100), nomT = fmtKw(nom);
+    ls = t(gridOk === false ? 'invLoadBat' : 'invLoadGrid', { p: Math.round(pct), n: nomT });
+    lvl = ovl === 2 ? 'bad' : ovl === 1 && zone(pct) !== 'bad' ? 'dis' : zone(pct);
+    if (ovl === 2) ls = t('overload') + ls; else if (ovl === 1) ls = t('nearOverload') + ls;
+    $('invBar').style.width = Math.min(100, pct) + '%';
+    $('invBar').style.background = `var(--${lvl})`;
+  }
+  $('invBarBox').hidden = !lvl;
+  $('load').parentElement.classList.toggle('bad', lvl === 'bad');
+  $('loadSub').textContent = ls;
+  $('bat').textContent = fmtW(P);
+  $('batSub').textContent = [vb, I != null ? amp(I) : '', T != null ? T.toFixed(0) + ' °C' : ''].filter(Boolean).join(' · ');
+  $('state').textContent = st == null ? '—' : (STATES[st] ? STATES[st][LI] : t('stateCode', { c: st }));
+
+  // history
+  if (now - lastHist >= 5000 && (P != null || load != null)) {
+    lastHist = now; hist.push({ t: now, p: P, c: load });
+    while (hist.length && hist[0].t < now - 15 * 60e3) hist.shift();
+  }
+  drawChart(now);
+}
+
+function drawChart(now) {
+  const cv = $('chart'), dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth, h = cv.clientHeight;
+  if (cv.width !== w * dpr || cv.height !== h * dpr) { cv.width = w * dpr; cv.height = h * dpr; }
+  const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h);
+  const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const L = 52, R = w - 6, top = 8, bot = h - 18, span = 15 * 60e3;
+  let max = 500; for (const p of hist) max = Math.max(max, Math.abs(p.p || 0), Math.abs(p.c || 0));
+  max = Math.ceil(max * 1.1 / 500) * 500;
+  const X = t => L + (R - L) * (1 - (now - t) / span), Y = v => top + (bot - top) * (max - v) / (2 * max);
+  g.font = '11px system-ui'; g.fillStyle = css('--mut'); g.strokeStyle = css('--line'); g.lineWidth = 1;
+  for (const v of [max, max / 2, 0, -max / 2, -max]) {
+    g.beginPath(); g.moveTo(L, Y(v)); g.lineTo(R, Y(v)); g.stroke();
+    g.fillText(fmtW(v), 2, Y(v) + 4);
+  }
+  for (const m of [15, 10, 5, 0]) g.fillText(m ? `−${m} ${t('uMin')}` : t('now'), Math.min(X(now - m * 60e3) - (m ? 16 : 34), R - 40), h - 3);
+  if (hist.length < 2) return;
+  const bw = Math.max(1, (R - L) / (span / 5000) - 0.5);
+  for (const p of hist) {
+    if (p.p == null) continue;
+    g.fillStyle = p.p >= 0 ? css('--chg') : css('--dis');
+    const y0 = Y(0), y1 = Y(p.p); g.fillRect(X(p.t) - bw, Math.min(y0, y1), bw, Math.abs(y1 - y0) || 1);
+  }
+  g.strokeStyle = css('--acc'); g.lineWidth = 2; g.beginPath(); let first = true;
+  for (const p of hist) { if (p.c == null) continue; const x = X(p.t), y = Y(p.c); first ? g.moveTo(x, y) : g.lineTo(x, y); first = false; }
+  g.stroke();
+}
+
+/* ---------- Demo mode (simulation) ---------- */
+function startDemo() {
+  setConn('wait', () => t('demoConn'));
+  portalId = 'demo';
+  const cap = 100, t0 = Date.now(); let soc = 72, kettleUntil = 0;
+  Object.assign(S, { 'system/0/ActiveBatteryService': 'com.victronenergy.battery/512', 'battery/512/InstalledCapacity': cap,
+    'settings/0/Settings/CGwacs/BatteryLife/MinimumSocLimit': 20,
+    // limits are set once: in demo the Limits button changes them here
+    'vebus/275/Dc/0/MaxChargeCurrent': 35, 'vebus/275/Ac/ActiveIn/CurrentLimit': 16, 'vebus/275/Ac/ActiveIn/CurrentLimitIsAdjustable': 1,
+    'battery/512/Info/MaxChargeCurrent': 100, 'settings/0/Settings/SystemSetup/MaxChargeCurrent': 35,
+    'settings/0/Settings/CGwacs/MaxChargePower': -1, 'system/0/Control/Dvcc': true });
+  const step = () => {
+    const t = (Date.now() - t0) / 1000;
+    const gridOn = Math.floor(t / 90) % 2 === 1;           // 90 s with grid, 90 s without
+    if (Math.random() < 0.01) kettleUntil = t + 20;
+    let load = 450 + 250 * Math.sin(t / 23) + 80 * Math.random() + (t < kettleUntil ? 2000 : 0);
+    const pv = Math.max(0, 600 * Math.sin(t / 60));
+    const V = 48.5 + soc * 0.045;
+    let batP, grid;
+    if (gridOn) { batP = soc < 100 ? Math.min(35 * V, 1700) : 0; grid = load + batP - pv; }
+    else { batP = -(load - pv) / 0.93; grid = 0; }
+    soc = Math.max(0, Math.min(100, soc + batP / V / cap * 100 / 3600 * 20)); // sped up ×20
+    Object.assign(S, {
+      'system/0/Dc/Battery/Soc': soc, 'system/0/Dc/Battery/Voltage': V, 'system/0/Dc/Battery/Power': batP,
+      'system/0/Dc/Battery/Current': batP / V, 'system/0/Dc/Battery/Temperature': 24,
+      'system/0/Ac/Consumption/L1/Power': load, 'system/0/Ac/Grid/L1/Power': gridOn ? grid : null,
+      'system/0/Dc/Pv/Power': pv, 'system/0/Ac/ActiveIn/Source': gridOn ? 1 : 240,
+      'system/0/SystemState/State': gridOn ? (soc < 100 ? 3 : 8) : 9,
+      'system/0/VebusInstance': 275, 'vebus/275/Ac/Out/NominalInverterPower': 2500, 'vebus/275/Ac/Out/P': load,
+      'vebus/275/Alarms/Overload': load > 2500 ? 2 : load > 2300 ? 1 : 0,
+    });
+    lastMsg = Date.now();
+  };
+  step(); demoTimer = setInterval(step, 1000);
+}
+
+/* ---------- UI ---------- */
+$('btnDemo').onclick = () => { cfg.demo = !cfg.demo; saveCfg(); start(); };
+$('btnWall').onclick = () => { cfg.wall = !cfg.wall; saveCfg(); applyWall(); tick(); };
+$('btnFs').onclick = () => {
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  else if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(() => {});
+};
+$('sndBadge').onclick = () => { audio(); setTimeout(tick, 100); };
+$('toast').onclick = () => { $('toast').hidden = true; };
+$('btnTest').onclick = () => {
+  audio(); let d = 0;
+  for (const k of ['lost', 'restore', 'low', 'reserve']) { const e = EV[k]; setTimeout(() => beep(e.tones, 1), d); d += 2200; }
+};
+// any touch: unlock audio (a browser requirement), wake the screen at night
+document.addEventListener('pointerdown', () => {
+  audio(); keepAwake();
+  if (document.body.classList.contains('night')) { nightWakeUntil = Date.now() + 60e3; document.body.classList.remove('night'); }
+}, true);
+document.addEventListener('visibilitychange', keepAwake);
+
+$('btnCfg').onclick = () => {
+  $('fUrl').value = cfg.url; $('fPortal').value = cfg.portal; $('fUser').value = cfg.user; $('fPw').value = sessionPw;
+  $('fCap').value = cfg.capAh; $('fRes').value = cfg.reserve; $('fTau').value = cfg.tau; $('fChgW').value = cfg.chgPw; $('fGridW').value = cfg.gridW;
+  $('fWall').checked = !!cfg.wall; $('fSnd').checked = !!cfg.snd; $('fQuiet').checked = !!cfg.quietNight;
+  $('fLow').value = cfg.lowSoc; $('fNf').value = cfg.nightFrom; $('fNt').value = cfg.nightTo; $('fNd').value = cfg.nightDim;
+  $('fQInMin').value = cfg.qInMin; $('fQInMax').value = cfg.qInMax; $('fQChgMin').value = cfg.qChgMin; $('fQChgMax').value = cfg.qChgMax;
+  $('dlg').showModal();
+};
+$('dlg').addEventListener('close', () => {
+  if ($('dlg').returnValue !== 'ok') return;
+  const connBefore = [cfg.url, cfg.portal, cfg.user, sessionPw].join('\n');
+  const hour = id => { const v = $(id).value.trim(); return v === '' ? '' : Math.max(0, Math.min(23, Math.round(+v) || 0)); };
+  const qv = (id, def) => { const v = $(id).value.trim(); return v === '' || !isFinite(+v) ? def : +v; };   // empty means default
+  Object.assign(cfg, { url: $('fUrl').value.trim() || DEF.url, portal: $('fPortal').value.trim(), user: $('fUser').value.trim(),
+    capAh: $('fCap').value.trim(), reserve: $('fRes').value.trim(), chgPw: $('fChgW').value.trim(), gridW: +$('fGridW').value > 0 ? +$('fGridW').value : DEF.gridW, tau: +$('fTau').value || 60,
+    wall: $('fWall').checked, snd: $('fSnd').checked, quietNight: $('fQuiet').checked, lowSoc: $('fLow').value.trim(),
+    nightFrom: hour('fNf'), nightTo: hour('fNt'), nightDim: +$('fNd').value || 30,
+    qInMin: qv('fQInMin', DEF.qInMin), qInMax: qv('fQInMax', DEF.qInMax), qChgMin: qv('fQChgMin', DEF.qChgMin), qChgMax: qv('fQChgMax', DEF.qChgMax) });
+  applyQuick(); applyLang();
+  sessionPw = $('fPw').value;
+  // reconnect only if the connection settings changed
+  if ([cfg.url, cfg.portal, cfg.user, sessionPw].join('\n') !== connBefore) { cfg.demo = false; saveCfg(); start(); }
+  else saveCfg();
+  applyWall(); tick();
+});
+
+/* ---------- Limits: writing to the GX (W/<portal>/<path> {"value": x}) ---------- */
+const P_IN = () => `vebus/${vebusInst()}/Ac/ActiveIn/CurrentLimit`;
+const P_CHG = 'settings/0/Settings/SystemSetup/MaxChargeCurrent';
+let pend = null;   // a sent write; waiting for the GX to publish the new value
+const fA = v => v == null ? '—' : dc(Math.round(v * 10) / 10) + ' ' + t('uA');
+let qClearAt = 0;
+function ctlStatus(text, cls) {
+  $('cStatus').textContent = text; $('cStatus').className = 'ctlst ' + (cls || '');
+  $('qStatus').textContent = text; $('qStatus').className = 'sub ' + (cls || '');   // the same under the quick buttons
+  qClearAt = text && cls ? Date.now() + 8000 : 0;
+}
+function writeGx(path, v, label, ask = true) {
+  if (!portalId || (!cfg.demo && !mq)) { ctlStatus(t('noGx'), 'bad'); return; }
+  if (!Number.isFinite(v)) { ctlStatus(t('enterNum'), 'bad'); return; }
+  if (ask && !confirm(t('confirmWrite', { l: label }))) return;
+  const before = num(S[path]);
+  if (cfg.demo) setTimeout(() => { S[path] = v; }, 800);
+  else mq.publish(`W/${portalId}/${path}`, JSON.stringify({ value: v }));
+  pend = { path, v, before, label, at: Date.now() };
+  ctlStatus(t('sent', { l: label }));
+}
+function ctlTick() {
+  const vi = vebusInst();
+  const inA = vi == null ? null : num(S[P_IN()]), adj = vi == null ? null : num(S[`vebus/${vi}/Ac/ActiveIn/CurrentLimitIsAdjustable`]);
+  const chg = num(S[P_CHG]), dvcc = S['system/0/Control/Dvcc'];
+  const chgT = chg == null ? '—' : chg < 0 ? t('noLimit') : fA(chg);
+  $('btnCtl').textContent = cfg.wall ? '⚡' : t('ctlBtn', { in: fA(inA), chg: chgT });
+  $('cInNow').textContent = inA == null ? '—' : t('nowInVal', { a: fA(inA), w: fmtW(inA * 230) });
+  $('cChgNow').textContent = t('nowVal', { v: chgT });
+  $('cInWarn').textContent = adj === 0 ? t('inFixed') : '';
+  $('cChgWarn').textContent = dvcc === false || dvcc === 0 ? t('dvccOff') : '';
+  // quick buttons in the charge card: highlight the current value, lock while a write is pending
+  document.querySelectorAll('[data-q]').forEach(b => {
+    b.classList.toggle('on', inA != null && Math.abs(inA - +b.dataset.q) < 0.05);
+    b.disabled = !!pend || adj === 0;
+  });
+  document.querySelectorAll('[data-qc]').forEach(b => {
+    b.classList.toggle('on', chg != null && Math.abs(chg - +b.dataset.qc) < 0.05);
+    b.disabled = !!pend || dvcc === false || dvcc === 0;
+    b.title = dvcc === false || dvcc === 0 ? t('dvccOff') : '';
+  });
+  if (qClearAt && Date.now() > qClearAt) { $('qStatus').textContent = ''; qClearAt = 0; }
+  if (pend) {
+    const cur = num(S[pend.path]);
+    if (cur != null && Math.abs(cur - pend.v) < 0.05) { ctlStatus(t('applied', { l: pend.label }), 'ok'); pend = null; }
+    else if (Date.now() - pend.at > 15000) {
+      ctlStatus(cur != null && cur !== pend.before ? t('clamped', { v: fA(cur) }) : t('notConfirmed', { v: fA(cur) }), cur !== pend.before ? '' : 'bad');
+      pend = null;
+    }
+  }
+}
+$('btnCtl').onclick = () => {
+  $('cIn').value = num(S[P_IN()]) ?? ''; const c = num(S[P_CHG]); $('cChg').value = c != null && c >= 0 ? c : '';
+  if (!pend) ctlStatus(''); ctlTick(); $('ctl').showModal();
+};
+// input quick buttons: write right away, without asking (safe values, easy to undo)
+// charge current quick buttons (DVCC limit): also without asking
+document.querySelectorAll('[data-qc]').forEach(b => b.onclick = () => {
+  const v = +b.dataset.qc;
+  if (Math.abs((num(S[P_CHG]) ?? -99) - v) < 0.05) return;
+  writeGx(P_CHG, v, t('lblChg', { a: fA(v), w: fmtW(v * NOM_V) }), false); ctlTick();
+});
+document.querySelectorAll('[data-q]').forEach(b => b.onclick = () => {
+  const v = +b.dataset.q;
+  if (Math.abs((num(S[P_IN()]) ?? -1) - v) < 0.05) return;
+  writeGx(P_IN(), v, t('lblIn', { a: fA(v), w: fmtW(v * 230) }), false); ctlTick();
+});
+document.querySelectorAll('[data-in]').forEach(b => b.onclick = () => { $('cIn').value = b.dataset.in; });
+document.querySelectorAll('[data-chg]').forEach(b => b.onclick = () => {
+  if (+b.dataset.chg < 0) writeGx(P_CHG, -1, t('lblChgOff')); else $('cChg').value = b.dataset.chg;
+});
+$('cInApply').onclick = () => {
+  const v = Math.round(parseFloat($('cIn').value) * 10) / 10;
+  if (!(v >= 1 && v <= 50)) { ctlStatus(t('rangeIn'), 'bad'); return; }
+  writeGx(P_IN(), v, t('lblIn', { a: fA(v), w: fmtW(v * 230) }));
+};
+$('cChgApply').onclick = () => {
+  const v = Math.round(parseFloat($('cChg').value));
+  if (!(v >= 0 && v <= 500)) { ctlStatus(t('rangeChg'), 'bad'); return; }
+  writeGx(P_CHG, v, v === 0 ? t('lblChgZero') : t('lblChg', { a: fA(v), w: fmtW(v * NOM_V) }));
+};
+// quick buttons from settings: max on top, the average in the middle, min at the bottom.
+// Input is rounded to 0.5 A, charge to 1 A; if min > max, they are swapped.
+function quickVals(lo, hi, step, min, max) {
+  const r = x => Math.round(x / step) * step, c = x => Math.min(max, Math.max(min, r(+x)));
+  let a = c(lo), b = c(hi); if (a > b) [a, b] = [b, a];
+  return [b, r((a + b) / 2), a];
+}
+function applyQuick() {
+  const qi = quickVals(cfg.qInMin, cfg.qInMax, 0.5, 1, 50), qc = quickVals(cfg.qChgMin, cfg.qChgMax, 1, 0, 500);
+  document.querySelectorAll('[data-q]').forEach((b, i) => { b.dataset.q = qi[i]; });
+  document.querySelectorAll('[data-qc]').forEach((b, i) => { b.dataset.qc = qc[i]; });
+}
+// language switch: texts change at once, the choice is remembered
+$('selLang').onchange = () => {
+  cfg.lang = $('selLang').value; LI = Math.max(0, LANGS.indexOf(cfg.lang)); saveCfg();
+  applyLang(); applyWall(); tick(); ctlTick();
+  if (connFn) $('connText').textContent = connFn();
+};
+setInterval(ctlTick, 1000);
+
+applyQuick();
+applyLang();
+applyWall();
+if (cfg.snd) audio();   // in a kiosk browser with autoplay allowed, sound works right away
+start();
+setInterval(tick, 1000);
+tick();
+</script>
+</body>
+</html>
