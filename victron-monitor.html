@@ -146,6 +146,30 @@ body.wall #toast{font-size:clamp(18px,3vw,44px);top:3vh;padding:2vh 3vw}
   body.wall #tDis,body.wall #tChg{font-size:clamp(32px,min(9vw,6.5vh),120px)}
 }
 body.night header,body.night main{filter:brightness(var(--dim,.3))}
+
+/* ---------- Survival calculator (right column; below the dashboard on narrow screens, hidden in wall mode) ---------- */
+.layout{max-width:1560px;margin:0 auto;display:grid;grid-template-columns:minmax(0,1fr) 340px;align-items:start}
+.layout>main{max-width:none;margin:0;width:100%}
+#surv{margin:16px 16px 16px 0;display:grid;gap:8px}
+@media (max-width:1100px){.layout{grid-template-columns:minmax(0,1fr)}#surv{margin:0 16px 16px}}
+body.wall .layout{display:contents} body.wall #surv{display:none}
+.survhd{display:flex;align-items:center;gap:8px}
+.survhd .lbl{flex:1}
+.survhd button{padding:4px 10px;font-size:13px}
+.survsum{font-weight:600;font-size:15px}
+.survsum.ok{color:var(--ok)} .survsum.warn{color:var(--warn)} .survsum.bad{color:var(--bad)}
+.survgrid{display:grid;grid-template-columns:30px repeat(3,minmax(0,1fr));gap:3px;user-select:none;-webkit-user-select:none;font-variant-numeric:tabular-nums}
+.svh{color:var(--mut);font-size:12px;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-bottom:2px}
+.svhr{color:var(--mut);font-size:11px;text-align:right;padding-right:4px;line-height:22px}
+.svc{height:22px;border-radius:4px;background:#0b1014;border:1px solid var(--line);font-size:12px;line-height:20px;text-align:center;cursor:pointer;touch-action:manipulation}
+.svc:hover{border-color:var(--acc)}
+.svc.ok{background-color:rgba(63,185,80,.32)} .svc.warn{background-color:rgba(210,153,34,.38)} .svc.bad{background-color:rgba(248,81,73,.42)}
+.svc.off{background-image:repeating-linear-gradient(135deg,rgba(0,0,0,.55) 0 4px,transparent 4px 9px);font-weight:600}
+.svc.past{opacity:.3;cursor:default}
+.svc.past:hover{border-color:var(--line)}
+.svc.cur{border:2px solid var(--acc);line-height:18px}
+.legend i.sv-ok{background:rgba(63,185,80,.7)} .legend i.sv-warn{background:rgba(210,153,34,.8)} .legend i.sv-bad{background:rgba(248,81,73,.8)}
+.legend i.sv-off{background:#0b1014 repeating-linear-gradient(135deg,var(--mut) 0 2px,transparent 2px 4px)}
 </style>
 </head>
 <body>
@@ -168,6 +192,7 @@ body.night header,body.night main{filter:brightness(var(--dim,.3))}
   </select>
 </header>
 
+<div class="layout">
 <main>
   <section class="hero">
     <div class="card">
@@ -226,6 +251,21 @@ body.night header,body.night main{filter:brightness(var(--dim,.3))}
 
   <p class="note" data-i="note"></p>
 </main>
+
+<!-- Survival calculator: a 3-day grid schedule (hours down, days across). A click marks an outage hour;
+     the battery SoC at the end of every hour is simulated from the charge / discharge rates of the forecast card. -->
+<aside class="card" id="surv">
+  <div class="survhd"><div class="lbl" data-i="survTitle"></div><button type="button" id="survClr" data-i="survClear"></button></div>
+  <div class="survsum" id="survSum">—</div>
+  <div class="sub" id="survRates"></div>
+  <div class="survgrid" id="survGrid"></div>
+  <div class="legend">
+    <span><i class="sv-ok"></i>&gt; 60 %</span><span><i class="sv-warn"></i>40–60 %</span><span><i class="sv-bad"></i>&lt; 40 %</span>
+    <span><i class="sv-off"></i><span data-i="survOff"></span></span>
+  </div>
+  <p class="note" data-i="survHint"></p>
+</aside>
+</div>
 
 <dialog id="dlg">
   <form method="dialog" id="frm">
@@ -562,6 +602,19 @@ const TR = {
   lblChgZero:   ['струм заряду 0 А — заряд зупинено', 'charge current 0 A — charging stopped'],
   rangeIn:      ['Вхідний струм: від 1 до 50 А', 'Input current: 1 to 50 A'],
   rangeChg:     ['Струм заряду: від 0 до 500 А', 'Charge current: 0 to 500 A'],
+  // survival calculator
+  survTitle:    ['Калькулятор виживання', 'Survival calculator'],
+  survClear:    ['Очистити', 'Clear'],
+  survClrAsk:   ['Прибрати всі позначені відключення?', 'Remove all marked outages?'],
+  survToday:    ['Сьогодні', 'Today'],
+  survTomorrow: ['Завтра', 'Tomorrow'],
+  survOff:      ['відключення', 'outage'],
+  survOn:       ['світло є', 'grid on'],
+  survOk:       ['✓ Вистачає: мінімум {p} % {at}', '✓ Enough: lowest {p} % {at}'],
+  survLow:      ['✗ Не вистачає: до {r} % {at}', '✗ Not enough: down to {r} % {at}'],
+  survRates:    ['заряд +{c} %/год · розряд −{d} %/год · пораховано о {t}', 'charge +{c} %/h · discharge −{d} %/h · calculated at {t}'],
+  survHint:     ['Натисніть на годину, щоб позначити відключення світла (за замовчуванням світло є); мишею можна протягнути по кількох годинах. Зі світлом батарея заряджається зі швидкістю «До повного заряду», без світла — розряджається зі швидкістю «До розряду». У клітинці — заряд наприкінці години. Перераховується при кожній зміні графіка й раз на хвилину за свіжими швидкостями.',
+                 'Tap an hour to mark a grid outage (by default the grid is on); with a mouse you can drag across several hours. With the grid on the battery charges at the “Time to full” rate, without it it discharges at the “Time to empty” rate. Each cell shows the charge at the end of that hour. Recalculated on every schedule change and once a minute with fresh rates.'],
 };
 // system states and input sources: [uk, en]
 const STATES = { 0: ['Вимкнено', 'Off'], 1: ['Енергозбереження', 'Low power'], 2: ['Помилка', 'Fault'],
@@ -929,9 +982,24 @@ function tick() {
   const mode = soc == null || emaI == null ? 'none' : emaI < -TH ? 'dis' : emaI > TH ? 'chg' : 'idle';
   $('disTo').textContent = reserve > 0 ? t('disTo', { r: reserve }) : '';
   const amp = x => dc(x.toFixed(1)) + ' ' + t('uA');
+  // survival calculator inputs; the rates stay null while there is nothing to compute from
+  SV.soc = soc; SV.reserve = reserve; SV.chg = SV.dis = null;
+  SV.why = mode === 'none' ? t('noData') : !capAh ? t('setCap') : '';
   if (mode === 'none') disSub = chgSub = t('noData');
   else if (!capAh) disSub = chgSub = t('setCap');
   else {
+    // expected charge current from the grid: from settings if a power is set; otherwise the tightest of the limits
+    // the GX publishes (DVCC, BMS, charger, ESS, input minus load); if there are none, 1500 W
+    let fcA, why;
+    const L = +cfg.chgPw > 0 ? null : chargeLimit(load);
+    if (+cfg.chgPw > 0) { fcA = +cfg.chgPw / NOM_V; why = t('whySettings'); }
+    else if (L) { fcA = L.a; why = L.why; }
+    else { fcA = 1500 / NOM_V; why = t('whyNone'); }
+    // expected discharge power without the grid: inverter efficiency ~92 % + ~20 W for the MultiPlus itself
+    const fcW = emaL == null ? null : Math.max(0, emaL) / 0.92 + 20;
+    // the same rates the card shows, in %/h: actual while it is happening, otherwise the forecast
+    SV.chg = (mode === 'chg' && soc < 99.5 ? emaI : fcA < 0.5 ? 0 : fcA) / capAh * 100;
+    SV.dis = mode === 'dis' ? -emaI / capAh * 100 : fcW != null ? fcW / NOM_V / capAh * 100 : null;
     // --- charge ---
     if (soc >= 99.5) { chg = t('full'); chgSub = mode === 'chg' ? t('topping') : t('charged'); }
     else if (mode === 'chg') {
@@ -939,14 +1007,8 @@ function tick() {
       chg = fmtDur(h); chgRate = (emaP != null ? fmtW(emaP) + ' · ' : '') + pctH(emaI, capAh);
       chgSub = fmtAt(h) + (cfg.wall ? '' : ' · ' + t('chgCur', { a: amp(emaI) }));
     } else {
-      // expected charge current: from settings if a power is set; otherwise the tightest of the limits
-      // the GX publishes (DVCC, BMS, charger, ESS, input minus load); if there are none, 1500 W
       chgFc = true;
-      let A, why;
-      const L = +cfg.chgPw > 0 ? null : chargeLimit(load);
-      if (+cfg.chgPw > 0) { A = +cfg.chgPw / NOM_V; why = t('whySettings'); }
-      else if (L) { A = L.a; why = L.why; }
-      else { A = 1500 / NOM_V; why = t('whyNone'); }
+      const A = fcA;
       if (A < 0.5) { chg = t('blocked'); chgSub = t('chgBlocked', { why }); }
       else {
         const h = capAh * (100 - soc) / 100 / A;
@@ -960,10 +1022,9 @@ function tick() {
       const h = capAh * (soc - reserve) / 100 / -emaI;
       dis = fmtDur(h); disRate = (emaP != null ? fmtW(-emaP) + ' · ' : '') + pctH(-emaI, capAh);
       disSub = fmtAt(h) + (cfg.wall ? '' : ' · ' + t('disCur', { a: amp(-emaI) }));
-    } else if (emaL != null) {
-      // the battery gives more than the house takes: inverter efficiency ~92 % + ~20 W for the MultiPlus itself
+    } else if (fcW != null) {
       disFc = true;
-      const w = Math.max(0, emaL) / 0.92 + 20, h = capAh * (soc - reserve) / 100 * NOM_V / w;
+      const w = fcW, h = capAh * (soc - reserve) / 100 * NOM_V / w;
       dis = fmtDur(h); disRate = fmtW(w) + ' · ' + pctH(w / NOM_V, capAh);
       disSub = `${fmtAt(h)} · ${src === 240 ? t('forecast') : t('ifGridDrops')}` + (cfg.wall ? '' : ' · ' + t('loadW', { w: fmtW(emaL) }));
     }
@@ -1061,6 +1122,96 @@ function tick() {
     while (hist.length && hist[0].t < now - 15 * 60e3) hist.shift();
   }
   drawChart(now);
+  survTick(now);
+}
+
+/* ---------- Survival calculator: grid schedule for today + 2 days ---------- */
+// Schedule: {"YYYY-MM-DD": [outage hours]} in localStorage; by default every hour has the grid.
+// Simulation from the current SoC: an hour with the grid charges at SV.chg %/h (up to 100 %),
+// an outage hour discharges at SV.dis %/h (down to 0 %). The current hour counts only its remaining part.
+const SV = { soc: null, reserve: 0, chg: null, dis: null, why: '' };   // filled by tick()
+let SCHED = {}, survAt = 0, survOk = false, survDirty = true, survPaint = null;
+try { SCHED = JSON.parse(localStorage.getItem('victronSched') || '{}') || {}; } catch (e) {}
+const dayOf = i => { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() + i); return d; };
+const dayKey = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+const isOff = (i, h) => (SCHED[dayKey(dayOf(i))] || []).includes(h);
+function setOff(i, h, off) {
+  const k = dayKey(dayOf(i)), a = (SCHED[k] || []).filter(x => x !== h);
+  if (off) a.push(h);
+  SCHED[k] = a.sort((x, y) => x - y);
+  const today = dayKey(dayOf(0));
+  for (const d in SCHED) if (d < today || !SCHED[d].length) delete SCHED[d];   // past days are dropped
+  try { localStorage.setItem('victronSched', JSON.stringify(SCHED)); } catch (e) {}
+  survDirty = true; survCalc();
+}
+function buildSurv() {
+  const g = $('survGrid'), mk = (cls, txt) => { const e = document.createElement('div'); e.className = cls; if (txt) e.textContent = txt; g.append(e); return e; };
+  mk('svh');
+  for (let d = 0; d < 3; d++) mk('svh').id = 'svd' + d;
+  for (let h = 0; h < 24; h++) {
+    mk('svhr', String(h).padStart(2, '0'));
+    for (let d = 0; d < 3; d++) { const c = mk('svc'); c.dataset.d = d; c.dataset.h = h; }
+  }
+  // click toggles an hour; dragging with the mouse paints the same value over the hours it passes
+  const cell = e => { const c = e.target.closest && e.target.closest('.svc'); return c && !c.classList.contains('past') ? c : null; };
+  g.addEventListener('pointerdown', e => {
+    const c = cell(e); if (!c) return;
+    if (e.pointerType === 'mouse') e.preventDefault();
+    survPaint = !isOff(+c.dataset.d, +c.dataset.h); setOff(+c.dataset.d, +c.dataset.h, survPaint);
+  });
+  g.addEventListener('pointerover', e => {
+    const c = cell(e); if (!c || survPaint === null || !(e.buttons & 1)) return;
+    if (isOff(+c.dataset.d, +c.dataset.h) !== survPaint) setOff(+c.dataset.d, +c.dataset.h, survPaint);
+  });
+  document.addEventListener('pointerup', () => { survPaint = null; });
+  document.addEventListener('pointercancel', () => { survPaint = null; });
+  $('survClr').onclick = () => {
+    if (!Object.keys(SCHED).length || !confirm(t('survClrAsk'))) return;
+    SCHED = {}; try { localStorage.removeItem('victronSched'); } catch (e) {}
+    survDirty = true; survCalc();
+  };
+}
+// recompute on every schedule change (setOff), once a minute with fresh rates, and every tick until the rates are known
+function survTick(now) { if (survDirty || !survOk || now - survAt >= 60e3) survCalc(); }
+function survCalc() {
+  const now = Date.now(), d0 = dayOf(0);
+  const ok = SV.soc != null && SV.chg != null && SV.dis != null;
+  survAt = now; survOk = ok; survDirty = false;
+  const floor = Math.max(0, SV.reserve || 0), lvl = p => p > 60 ? 'ok' : p >= 40 ? 'warn' : 'bad';
+  let soc = SV.soc, minP = soc, minAt = now, hitAt = null;
+  for (let d = 0; d < 3; d++) {
+    const day = dayOf(d);
+    const dl = d === 0 ? t('survToday') : d === 1 ? t('survTomorrow')
+      : day.toLocaleDateString(LOC(), { weekday: 'short', day: 'numeric', month: 'numeric' });
+    $('svd' + d).textContent = dl;
+    for (let h = 0; h < 24; h++) {
+      const c = $('survGrid').querySelector(`.svc[data-d="${d}"][data-h="${h}"]`);
+      // DST-safe hour bounds: built from calendar fields, not by adding 3600 s
+      const t0 = new Date(d0.getFullYear(), d0.getMonth(), d0.getDate() + d, h).getTime();
+      const t1 = new Date(d0.getFullYear(), d0.getMonth(), d0.getDate() + d, h + 1).getTime();
+      const off = isOff(d, h), past = t1 <= now, cur = t0 <= now && now < t1;
+      let cls = 'svc' + (off ? ' off' : '') + (past ? ' past' : '') + (cur ? ' cur' : ''), txt = '';
+      c.title = `${dl} ${String(h).padStart(2, '0')}:00–${String((h + 1) % 24).padStart(2, '0')}:00 · ${t(off ? 'survOff' : 'survOn')}`;
+      if (!past && ok) {
+        const from = Math.max(t0, now), hrs = (t1 - from) / 3600e3;
+        if (off) {
+          const nx = soc - SV.dis * hrs;
+          if (hitAt == null && nx <= floor && SV.dis > 0) hitAt = from + Math.max(0, soc - floor) / SV.dis * 3600e3;
+          soc = Math.max(0, nx);
+          if (soc < minP) { minP = soc; minAt = t1; }
+        } else soc = Math.min(100, soc + SV.chg * hrs);
+        txt = Math.round(soc) + '%'; cls += ' ' + lvl(soc);
+        c.title += ` · ${Math.round(soc)} %`;
+      } else if (!past) txt = '—';
+      c.className = cls; c.textContent = txt;
+    }
+  }
+  const sum = $('survSum'), at = ms => fmtAt(Math.max(0, ms - now) / 3600e3);
+  if (!ok) { sum.textContent = SV.why || t('noData'); sum.className = 'survsum'; $('survRates').textContent = ''; return; }
+  if (hitAt != null) { sum.textContent = t('survLow', { r: Math.round(floor), at: at(hitAt) }); sum.className = 'survsum bad'; }
+  else { sum.textContent = t('survOk', { p: Math.round(minP), at: at(minAt) }); sum.className = 'survsum ' + lvl(minP); }
+  $('survRates').textContent = t('survRates', { c: dc(SV.chg.toFixed(1)), d: dc(SV.dis.toFixed(1)),
+    t: new Date(now).toLocaleTimeString(LOC(), { hour: '2-digit', minute: '2-digit' }) });
 }
 
 function drawChart(now) {
@@ -1170,7 +1321,7 @@ $('dlg').addEventListener('close', () => {
   // reconnect only if the connection settings changed
   if ([cfg.url, cfg.portal, cfg.user, sessionPw].join('\n') !== connBefore) { cfg.demo = false; saveCfg(); start(); }
   else saveCfg();
-  applyWall(); tick();
+  survDirty = true; applyWall(); tick();
 });
 
 /* ---------- Limits: writing to the GX (W/<portal>/<path> {"value": x}) ---------- */
@@ -1269,12 +1420,13 @@ function applyQuick() {
 // language switch: texts change at once, the choice is remembered
 $('selLang').onchange = () => {
   cfg.lang = $('selLang').value; LI = Math.max(0, LANGS.indexOf(cfg.lang)); saveCfg();
-  applyLang(); applyWall(); tick(); ctlTick();
+  survDirty = true; applyLang(); applyWall(); tick(); ctlTick();
   if (connFn) $('connText').textContent = connFn();
 };
 setInterval(ctlTick, 1000);
 
 applyQuick();
+buildSurv();
 applyLang();
 applyWall();
 if (cfg.snd) audio();   // in a kiosk browser with autoplay allowed, sound works right away
