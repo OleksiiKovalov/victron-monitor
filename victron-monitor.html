@@ -874,14 +874,16 @@ function vebusInst() {
 }
 // The current the GX will charge the battery with from the grid: the tightest of the limits it publishes itself.
 // load is the current load, W: when the grid returns it also goes through the input and takes from the charger.
-function chargeLimit(load) {
+// full = the battery is at 100 %: the BMS (and the GX limit derived from it) then drop the charge current to ~0,
+// which only means "full", not "the grid will not charge"; such zeros are skipped (used by the survival calculator)
+function chargeLimit(load, full) {
   const vi = vebusInst(), bi = batInsts()[0], c = [];
-  const add = (v, why) => { v = num(v); if (v != null && v >= 0) c.push({ a: v, why }); };
+  const add = (v, why, dyn) => { v = num(v); if (v != null && v >= 0 && !(full && dyn && v < 0.5)) c.push({ a: v, why }); };
   add(S['settings/0/Settings/SystemSetup/MaxChargeCurrent'], t('whyDvcc'));           // −1 = off
-  if (bi != null) add(S[`battery/${bi}/Info/MaxChargeCurrent`], t('whyBms'));
+  if (bi != null) add(S[`battery/${bi}/Info/MaxChargeCurrent`], t('whyBms'), true);
   if (vi != null) {
     add(S[`vebus/${vi}/Dc/0/MaxChargeCurrent`], t('whyCharger'));
-    add(S[`vebus/${vi}/BatteryOperationalLimits/MaxChargeCurrent`], t('whyGx'));
+    add(S[`vebus/${vi}/BatteryOperationalLimits/MaxChargeCurrent`], t('whyGx'), true);
   }
   const essW = num(S['settings/0/Settings/CGwacs/MaxChargePower']);                    // −1 = no limit
   if (essW != null && essW >= 0) add(essW / NOM_V, t('whyEss'));
@@ -998,7 +1000,10 @@ function tick() {
     // expected discharge power without the grid: inverter efficiency ~92 % + ~20 W for the MultiPlus itself
     const fcW = emaL == null ? null : Math.max(0, emaL) / 0.92 + 20;
     // the same rates the card shows, in %/h: actual while it is happening, otherwise the forecast
-    SV.chg = (mode === 'chg' && soc < 99.5 ? emaI : fcA < 0.5 ? 0 : fcA) / capAh * 100;
+    // a full battery blocks charging only until its SoC drops: for the simulation the BMS "full" zero is ignored
+    let simA = fcA;
+    if (soc >= 99.5 && fcA < 0.5) { const F = chargeLimit(load, true); simA = F ? F.a : 1500 / NOM_V; }
+    SV.chg = (mode === 'chg' && soc < 99.5 ? emaI : simA < 0.5 ? 0 : simA) / capAh * 100;
     SV.dis = mode === 'dis' ? -emaI / capAh * 100 : fcW != null ? fcW / NOM_V / capAh * 100 : null;
     // --- charge ---
     if (soc >= 99.5) { chg = t('full'); chgSub = mode === 'chg' ? t('topping') : t('charged'); }
@@ -1269,6 +1274,7 @@ function startDemo() {
       'system/0/Dc/Battery/Current': batP / V, 'system/0/Dc/Battery/Temperature': 24,
       'system/0/Ac/Consumption/L1/Power': load, 'system/0/Ac/Grid/L1/Power': gridOn ? grid : null,
       'system/0/Dc/Pv/Power': pv, 'system/0/Ac/ActiveIn/Source': gridOn ? 1 : 240,
+      'battery/512/Info/MaxChargeCurrent': soc >= 100 ? 0 : 100,            // like a real BMS: no charge current when full
       'system/0/SystemState/State': gridOn ? (soc < 100 ? 3 : 8) : 9,
       'system/0/VebusInstance': 275, 'vebus/275/Ac/Out/NominalInverterPower': 2500, 'vebus/275/Ac/Out/P': load,
       'vebus/275/Alarms/Overload': load > 2500 ? 2 : load > 2300 ? 1 : 0,
